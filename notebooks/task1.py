@@ -77,9 +77,7 @@
 # ---
 # ## Importing libraries
 # 
-# The next cell imports everything used in the rest of the notebook and `pip installs` the
-# two non-default libraries (`emoji`, `contractions`) so the notebook is self-contained on
-# a fresh environment.
+# The next cell imports everything used in the rest of the notebook.
 
 # %%
 from collections import Counter, defaultdict
