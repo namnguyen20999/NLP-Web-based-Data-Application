@@ -60,10 +60,11 @@
 import os
 from collections import Counter
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from IPython.display import display
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, hstack as sp_hstack
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.impute import SimpleImputer
@@ -540,74 +541,6 @@ evaluate_representation(X_unweighted, df_unweighted['is_a_buyer'], "Unweighted G
 evaluate_representation(X_weighted, df_weighted['is_a_buyer'], "Weighted GloVe", "Logistic Regression",
                         LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
 # %% [markdown]
-# #### Initialise Classifiers and Load Representations
-# 
-# %%
-# Classifiers compatible with all representation types (including dense / negative values)
-general_classifiers = {
-    "Logistic Regression": LogisticRegression(max_iter=2000, solver="liblinear",
-                                              random_state=RANDOM_STATE),
-    "Linear SVM"         : LinearSVC(random_state=RANDOM_STATE),
-}
-
-# MultinomialNB added only for the non-negative Bag-of-Words representation
-count_classifiers = {
-    **general_classifiers,
-    "Multinomial Naïve Bayes": MultinomialNB(),
-}
-
-# Map each representation name to its file path and format
-representations_q1 = {
-    "Bag-of-Words" : (COUNT_VEC_PATH,  "sparse"),
-    "Unweighted"   : (UNWEIGHTED_PATH, "dense"),
-    "Weighted"     : (WEIGHTED_PATH,   "dense"),
-}
-
-# %% [markdown]
-# #### Run Q1 Experiments
-# 
-# %%
-q1_results = []
-
-for rep_name, (path, fmt) in representations_q1.items():
-    if not os.path.exists(path):
-        print(f"[SKIP] File not found: {path}")
-        continue
-
-    X_rep, idx = (load_count_vectors(path) if fmt == "sparse"
-                  else load_dense_vectors(path))
-
-    if X_rep is None:
-        print(f"[SKIP] Could not parse: {path}")
-        continue
-
-    y_rep = df.loc[idx, "label"].to_numpy()
-    clfs  = count_classifiers if rep_name == "Bag-of-Words" else general_classifiers
-
-    print(f"\n[{rep_name}]  shape={X_rep.shape}")
-    for clf_name, clf in clfs.items():
-        print(f"  Training {clf_name} ...")
-        q1_results.append(
-            evaluate_representation(X_rep, y_rep, rep_name, clf_name, clf)
-        )
-
-# %% [markdown]
-# #### Q1 Results Summary
-# 
-# %%
-q1_df = pd.DataFrame(q1_results)
-
-if not q1_df.empty:
-    q1_df = (q1_df
-             .sort_values("_f1_sort", ascending=False)
-             .drop(columns=["_f1_sort"])
-             .reset_index(drop=True))
-    print("Q1 — Language Model Comparison (sorted by F1, descending):\n")
-    display(q1_df)
-else:
-    print("No Q1 results — verify that Task 2 output files exist in the working directory.")
-
-# %% [markdown]
 # ---
 # ### Q2 — Does Additional Context Improve Classification?
 # #
@@ -629,247 +562,211 @@ else:
 # **Method:** Same 5-fold Stratified CV strategy as Q1 for a fair comparison.
 # 
 # %% [markdown]
-# #### Load and Prepare Q2 Dataset
+# #### Scenario 1 — Text Only (Task 2 Pre-computed Vectors) - Already Evaluated in Q1
 # 
-# %%
-# Reuse processed.csv (already loaded as df_task2) so that row indices align exactly
-# with the pre-computed vector files, which were built from processed.csv.
-df_q2 = df_task2.copy().reset_index(drop=True)
-
-TEXT_COLS    = ["review_text", "review_title", "product_title", "brand_name"]
-NUMERIC_COLS = ["price", "avg_product_rating", "product_rating_count"]
-
-for _col in TEXT_COLS:
-    df_q2[_col] = df_q2.get(_col, pd.Series([""] * len(df_q2))).fillna("")
-
-for _col in NUMERIC_COLS:
-    if _col not in df_q2.columns:
-        df_q2[_col] = np.nan
-    df_q2[_col] = pd.to_numeric(df_q2[_col], errors="coerce")
-
-if df_q2["is_a_buyer"].dtype == bool:
-    df_q2["label"] = df_q2["is_a_buyer"].astype(int)
-else:
-    df_q2["label"] = (
-        df_q2["is_a_buyer"].astype(str).str.strip().str.lower()
-        .map({"true": 1, "false": 0})
-    )
-
-df_q2 = df_q2.dropna(subset=["label"]).reset_index(drop=True)
-df_q2["label"] = df_q2["label"].astype(int)
-y_q2 = df_q2["label"].to_numpy()
-
-print(f"Q2 dataset shape : {df_q2.shape}")
-print(f"\nLabel distribution:\n{df_q2['label'].value_counts().to_string()}")
-
-# %% [markdown]
-# #### Cross-Validation Engines and Pipeline Factory
-# 
-# %%
-_cv_q2      = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-_scoring_q2 = {"accuracy": "accuracy", "precision": "precision",
-               "recall": "recall", "f1": "f1"}
-
-
-def _build_result_row(scores: dict, info_setting: str,
-                      rep_name: str, clf_name: str) -> dict:
-    return {
-        "Information Setting" : info_setting,
-        "Representation"      : rep_name,
-        "Classifier"          : clf_name,
-        "Accuracy"            : f"{scores['test_accuracy'].mean():.4f}",
-        "F1"                  : f"{scores['test_f1'].mean():.4f}",
-        "_f1_sort"            : scores["test_f1"].mean(),
-    }
-
-
-def evaluate_matrix_q2(X, y, rep_name: str,
-                        info_setting: str, clf_name: str, clf) -> dict:
-    """Evaluate a pre-computed matrix with cross-validation."""
-    _scores = cross_validate(clf, X, y, cv=_cv_q2, scoring=_scoring_q2,
-                             n_jobs=-1, error_score="raise")
-    return _build_result_row(_scores, info_setting, rep_name, clf_name)
-
-
-def evaluate_pipeline_q2(preprocessor, X_df, y, rep_name: str,
-                          info_setting: str, clf_name: str, clf) -> dict:
-    """Evaluate a full sklearn Pipeline (preprocessor + classifier)."""
-    _pipe   = Pipeline([("preprocessor", preprocessor), ("classifier", clf)])
-    _scores = cross_validate(_pipe, X_df, y, cv=_cv_q2, scoring=_scoring_q2,
-                             n_jobs=-1, error_score="raise")
-    return _build_result_row(_scores, info_setting, rep_name, clf_name)
-
-
-# Shared numeric transformer: impute missing values then scale
-_numeric_transformer = Pipeline([
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler",  StandardScaler(with_mean=False)),
-])
-
-
-def make_preprocessor(rep_name: str, include_extra: bool) -> ColumnTransformer:
-    """Return a ColumnTransformer tailored to the requested representation.
-
-    Each text field gets its own independent vectorizer instance so they learn
-    separate vocabularies from different columns.
-    """
-    if rep_name == "Weighted":
-        def _make_vec(max_f): return TfidfVectorizer(max_features=max_f)
-    elif rep_name == "Unweighted":
-        # binary=True approximates presence-only (unweighted) encoding
-        def _make_vec(max_f): return CountVectorizer(binary=True, max_features=max_f)
-    else:  # Bag-of-Words
-        def _make_vec(max_f): return CountVectorizer(max_features=max_f)
-
-    transformers = [
-        ("review_text_vec",  _make_vec(5000), "review_text"),
-        ("review_title_vec", _make_vec(2000), "review_title"),
-    ]
-    if include_extra:
-        transformers.extend([
-            ("product_title_vec", _make_vec(2000),                            "product_title"),
-            ("brand_ohe",         OneHotEncoder(handle_unknown="ignore"),      ["brand_name"]),
-            ("numeric",           _numeric_transformer,                        NUMERIC_COLS),
-        ])
-    return ColumnTransformer(transformers, remainder="drop")
-
-
-classifiers_q2 = {
-    "Logistic Regression": LogisticRegression(max_iter=2000, solver="liblinear",
-                                              random_state=RANDOM_STATE),
-    "Linear SVM"         : LinearSVC(random_state=RANDOM_STATE),
-}
-
-# %% [markdown]
-# #### Scenario 1 — Text Only (Task 2 Pre-computed Vectors)
-# 
-# %%
-q2_results = []
-n_rows_q2  = len(df_q2)
-
-text_only_reps = {
-    "Bag-of-Words" : (COUNT_VEC_PATH,  "sparse"),
-    "Weighted"     : (WEIGHTED_PATH,   "dense"),
-    "Unweighted"   : (UNWEIGHTED_PATH, "dense"),
-}
-
-for rep_name, (path, fmt) in text_only_reps.items():
-    if not os.path.exists(path):
-        print(f"[SKIP] {path} not found.")
-        continue
-    _loader     = load_count_vectors if fmt == "sparse" else load_dense_vectors
-    _X_raw, _idx = _loader(path)
-    _X_aligned   = align_to_dataframe(_X_raw, _idx, n_rows_q2)
-
-    print(f"Scenario 1 — Text only [{rep_name}]")
-    for clf_name, clf in classifiers_q2.items():
-        q2_results.append(
-            evaluate_matrix_q2(_X_aligned, y_q2, rep_name, "Text only", clf_name, clf)
-        )
-
 # %% [markdown]
 # #### Scenario 2 — Text + Review Title
 # 
+# %% [markdown]
+# For this scenario, `review_title` is represented three ways — mirroring the Task 2
+# pipeline — and each title representation is concatenated with its matching text
+# representation before cross-validation:
+# #
+# | Combined representation | Text part | Title part | Concat |
+# |---|---|---|---|
+# | Bag-of-Words | sparse BoW (Task 2a) | sparse BoW (CountVectorizer) | `sp_hstack` |
+# | Unweighted GloVe | dense 300-d (Task 2b) | dense 300-d (avg GloVe) | `np.hstack` |
+# | Weighted GloVe | dense 300-d (Task 2b) | dense 300-d (TF-IDF × GloVe) | `np.hstack` |
 # %%
-X_q2_df = df_q2[TEXT_COLS + NUMERIC_COLS].copy()
-rep_names_q2 = ["Bag-of-Words", "Weighted", "Unweighted"]
+# Build three feature representations for review_title
+_titles_q2 = df_task2["review_title"].fillna("").astype(str).tolist()
 
-print("Scenario 2 — Text + Title")
-for rep_name in rep_names_q2:
-    preprocessor = make_preprocessor(rep_name, include_extra=False)
-    for clf_name, clf in classifiers_q2.items():
-        print(f"  [{rep_name}] {clf_name}")
-        q2_results.append(
-            evaluate_pipeline_q2(preprocessor, X_q2_df, y_q2,
-                                  rep_name, "Text + Title", clf_name, clf)
-        )
+# --- Title BoW ---
+_title_cv   = CountVectorizer(lowercase=True, min_df=2)
+X_title_bow = _title_cv.fit_transform(_titles_q2)
+print(f"Title BoW        : {X_title_bow.shape}")
+
+# --- Title Unweighted GloVe ---
+_title_unw_vecs = []
+for _t in _titles_q2:
+    _toks = _t.lower().split()
+    _vecs = [glove[w] for w in _toks if w in glove]
+    _title_unw_vecs.append(np.mean(_vecs, axis=0) if _vecs else np.zeros(EMBEDDING_DIM))
+X_title_unweighted = np.array(_title_unw_vecs)
+print(f"Title Unweighted : {X_title_unweighted.shape}")
+
+# --- Title TF-IDF Weighted GloVe ---
+_title_tfidf_vec = TfidfVectorizer(tokenizer=lambda x: x.lower().split(),
+                                   token_pattern=None)
+_title_tfidf_mat = _title_tfidf_vec.fit_transform(_titles_q2)
+_title_word_idx  = {w: i for i, w in enumerate(_title_tfidf_vec.get_feature_names_out())}
+
+_title_wt_vecs = []
+for _i, _t in enumerate(_titles_q2):
+    _toks  = _t.lower().split()
+    _vec   = np.zeros(EMBEDDING_DIM)
+    _total = 0.0
+    for _w in _toks:
+        if _w in glove and _w in _title_word_idx:
+            _wt     = _title_tfidf_mat[_i, _title_word_idx[_w]]
+            _vec   += glove[_w] * _wt
+            _total += _wt
+    if _total > 0:
+        _vec /= _total
+    _title_wt_vecs.append(_vec)
+X_title_weighted = np.array(_title_wt_vecs)
+print(f"Title Weighted   : {X_title_weighted.shape}")
+
+# %%
+# Evaluate Scenario 2 — Text + Title (Logistic Regression, same as Scenario 1)
+_lr_q2 = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+
+q2_results = []
+
+print("Scenario 2 — Text + Title\n")
+
+# BoW text + BoW title (sparse + sparse)
+_X_bow_q2 = sp_hstack([X_count, X_title_bow])
+_res = evaluate_representation(_X_bow_q2, df_count["is_a_buyer"].to_numpy(),
+                               "Bag-of-Words", "Logistic Regression", _lr_q2)
+_res["Information Setting"] = "Text + Title"
+q2_results.append(_res)
+
+# Unweighted GloVe text + Unweighted GloVe title (dense + dense)
+_X_unw_q2 = np.hstack([X_unweighted, X_title_unweighted])
+_res = evaluate_representation(_X_unw_q2, df_unweighted["is_a_buyer"].to_numpy(),
+                               "Unweighted GloVe", "Logistic Regression", _lr_q2)
+_res["Information Setting"] = "Text + Title"
+q2_results.append(_res)
+
+# Weighted GloVe text + Weighted GloVe title (dense + dense)
+_X_wt_q2 = np.hstack([X_weighted, X_title_weighted])
+_res = evaluate_representation(_X_wt_q2, df_weighted["is_a_buyer"].to_numpy(),
+                               "Weighted GloVe", "Logistic Regression", _lr_q2)
+_res["Information Setting"] = "Text + Title"
+q2_results.append(_res)
 
 # %% [markdown]
 # #### Scenario 3 — Text + Title + Extra Metadata
+# #
+# Candidate extra columns (after dropping id columns, `product_url`, `author`,
+# `review_date`, and `review_text` / `review_title` already used):
+# #
+# | Column | Type |
+# |---|---|
+# | `review_rating` | numeric |
+# | `price` | numeric |
+# | `avg_product_rating` | numeric |
+# | `product_rating_count` | numeric |
+# | `brand_name` | categorical |
+# #
+# Numeric features are assessed via Pearson correlation with `is_a_buyer`.
+# `brand_name` is categorical so it is evaluated separately and one-hot encoded if included.
 # 
 # %%
-print("Scenario 3 — Text + Title + Extra Metadata")
-for rep_name in rep_names_q2:
-    preprocessor = make_preprocessor(rep_name, include_extra=True)
-    for clf_name, clf in classifiers_q2.items():
-        print(f"  [{rep_name}] {clf_name}")
-        q2_results.append(
-            evaluate_pipeline_q2(preprocessor, X_q2_df, y_q2,
-                                  rep_name, "Text + Title + Extra", clf_name, clf)
-        )
+# --- Correlation table: numeric features vs is_a_buyer ---
+_NUMERIC_EXTRA = ["review_rating", "price", "avg_product_rating", "product_rating_count"]
+_CAT_EXTRA     = ["brand_name"]
+
+df_s3 = df_task2[_NUMERIC_EXTRA + _CAT_EXTRA + ["is_a_buyer"]].copy()
+_y_s3 = (df_s3["is_a_buyer"] == True).astype(int)
+
+# Correlation matrix (numeric features + target)
+_corr_full = (
+    df_s3[_NUMERIC_EXTRA]
+    .apply(pd.to_numeric, errors="coerce")
+    .assign(is_a_buyer=_y_s3)
+    .corr()
+)
+
+fig, ax = plt.subplots(figsize=(7, 5))
+
+_heatmap_data = _corr_full.values
+_labels       = _corr_full.columns.tolist()
+_im = ax.imshow(_heatmap_data, cmap="RdYlGn", vmin=-1, vmax=1)
+ax.set_xticks(range(len(_labels)))
+ax.set_yticks(range(len(_labels)))
+ax.set_xticklabels(_labels, rotation=45, ha="right", fontsize=9)
+ax.set_yticklabels(_labels, fontsize=9)
+for _i in range(len(_labels)):
+    for _j in range(len(_labels)):
+        ax.text(_j, _i, f"{_heatmap_data[_i, _j]:.2f}",
+                ha="center", va="center", fontsize=8,
+                color="black" if abs(_heatmap_data[_i, _j]) < 0.6 else "white")
+plt.colorbar(_im, ax=ax)
+ax.set_title("Feature Correlation Heatmap (including is_a_buyer)")
+
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
-# #### Q2 Results Summary
+# #### Observation
+# #
+# Since the target variable is `is_a_buyer`, the most relevant numerical features are
+# `price` and `product_rating_count`. `price` has the strongest negative correlation
+# with the target, while `product_rating_count` has the strongest positive correlation.
+# Although both relationships are weak, they provide more useful signal than
+# `review_rating` and `avg_product_rating`, which show near-zero correlation with
+# `is_a_buyer`. Based on this, only `price` and `product_rating_count` are selected
+# as numeric extra features, alongside `brand_name` which is one-hot encoded to
+# capture brand-level purchasing patterns.
 # 
 # %%
-q2_df = pd.DataFrame(q2_results)
+# --- Feature selection based on heatmap observation ---
+_selected_numeric = ["price", "product_rating_count"]
 
-if not q2_df.empty:
-    q2_df = (q2_df
-             .sort_values(["Information Setting", "Representation", "_f1_sort"],
-                          ascending=[True, True, False])
-             .drop(columns=["_f1_sort"])
-             .reset_index(drop=True))
-    print("Q2 — Information Expansion Comparison:\n")
-    display(q2_df)
-else:
-    print("No Q2 results — verify file paths and that Task 2 output files exist.")
+print("Extra features selected:")
+print(f"  Numeric     : {_selected_numeric}")
+print(f"  Categorical : {_CAT_EXTRA}")
 
-# %% [markdown]
-# ### Q2 Analysis and Findings
-# #
-# **Research Question:** Does incorporating additional product and contextual information
-# beyond the review body improve `is_a_buyer` classification accuracy?
-# #
-# **Conclusion:**
-# Based on 5-fold stratified cross-validation, incorporating supplementary data
-# [*fill in after running — e.g., "significantly improved" / "did not meaningfully improve"*]
-# the model's ability to classify purchasing behaviour compared to review text alone.
-# #
-# **Key Observations:**
-# #
-# 1. **Review Title (Scenario 2 vs. Scenario 1):**
-#    Adding the review title produced a [slight / significant] change in F1 score.
-#    Titles tend to be short, opinionated phrases ("Perfect moisturiser!", "Broke me
-#    out immediately") that carry concentrated sentiment — [confirming / contradicting]
-#    the hypothesis that they provide complementary signal to the longer review body.
-# #
-# 2. **Structured Metadata (Scenario 3 vs. Scenario 2):**
-#    Appending product title, brand (one-hot encoded), and numeric fields (price,
-#    average rating, rating count) [further improved / had negligible effect on]
-#    performance, suggesting that [pricing and brand signals carry discriminative
-#    information / `is_a_buyer` is driven almost entirely by review text].
-# #
-# 3. **Best Overall Configuration:**
-#    Across all three scenarios, **[representation]** paired with **[classifier]**
-#    consistently achieved the highest F1-score.  This highlights the importance of
-#    [*your explanation — e.g., TF-IDF weighting for suppressing noisy common words*].
-# 
-# %% [markdown]
-# ---
-# ## Summary
-# #
-# This notebook completed **Tasks 2 and 3** of Assignment 2.
-# #
-# **Task 2** produced three vector representations of the cosmetics review corpus:
-# #
-# * **Bag-of-Words** — sparse count vectors built from a 7,241-word vocabulary,
-#   capturing exact lexical frequency.
-# * **Unweighted GloVe** — 300-d dense vectors via uniform averaging of token
-#   embeddings, capturing distributional semantics without frequency bias.
-# * **TF-IDF Weighted GloVe** — 300-d dense vectors that down-weight common tokens,
-#   allowing rare, topic-specific words to dominate the review representation.
-# #
-# **Task 3** evaluated Logistic Regression, Linear SVM, and Multinomial Naïve Bayes
-# (BoW only) on two research questions:
-# #
-# * **Q1** compared the three representations and found that [*fill in best result
-#   after running, e.g., "TF-IDF Weighted GloVe + Linear SVM achieved the highest
-#   mean F1 of X.XX"*].
-# * **Q2** investigated information enrichment and found that [*fill in conclusion,
-#   e.g., "adding the review title improved F1 by X pp, while structured metadata
-#   provided marginal additional gains"*].
-# #
-# Overall, [*your high-level takeaway about which representation and how much extra
-# context is worth the added complexity*].
-# 
+# %%
+# --- Build extra feature matrix (normalize numeric, one-hot encode categorical) ---
+_num_pipe = Pipeline([
+    ("impute", SimpleImputer(strategy="median")),
+    ("scale",  StandardScaler()),
+])
+_cat_pipe = Pipeline([
+    ("impute", SimpleImputer(strategy="most_frequent")),
+    ("ohe",    OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+])
+
+_extra_ct = ColumnTransformer([
+    ("num", _num_pipe, _selected_numeric),
+    ("cat", _cat_pipe, _CAT_EXTRA),
+], remainder="drop")
+
+X_extra = _extra_ct.fit_transform(df_s3[_selected_numeric + _CAT_EXTRA])
+if hasattr(X_extra, "toarray"):
+    X_extra = X_extra.toarray()
+X_extra_sp = csr_matrix(X_extra)
+
+print(f"Extra feature matrix : {X_extra.shape}  "
+      f"({len(_selected_numeric)} numeric + OHE brand_name)")
+
+# %%
+# --- Evaluate Scenario 3 — Text + Title + Extra (Logistic Regression) ---
+_lr_s3 = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+
+_extra_label = f"Text + Title + price + product_rating_count + brand_name"
+print(f"Scenario 3 — {_extra_label}\n")
+
+# BoW text+title (sparse) + extra (sparse)
+_X_bow_s3 = sp_hstack([_X_bow_q2, X_extra_sp])
+_res = evaluate_representation(_X_bow_s3, df_count["is_a_buyer"].to_numpy(),
+                               "Bag-of-Words", "Logistic Regression", _lr_s3)
+_res["Information Setting"] = _extra_label
+q2_results.append(_res)
+
+# Unweighted GloVe text+title (dense) + extra (dense)
+_X_unw_s3 = np.hstack([_X_unw_q2, X_extra])
+_res = evaluate_representation(_X_unw_s3, df_unweighted["is_a_buyer"].to_numpy(),
+                               "Unweighted GloVe", "Logistic Regression", _lr_s3)
+_res["Information Setting"] = _extra_label
+q2_results.append(_res)
+
+# Weighted GloVe text+title (dense) + extra (dense)
+_X_wt_s3 = np.hstack([_X_wt_q2, X_extra])
+_res = evaluate_representation(_X_wt_s3, df_weighted["is_a_buyer"].to_numpy(),
+                               "Weighted GloVe", "Logistic Regression", _lr_s3)
+_res["Information Setting"] = _extra_label
+q2_results.append(_res)
