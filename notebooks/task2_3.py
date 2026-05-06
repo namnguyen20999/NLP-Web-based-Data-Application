@@ -11,18 +11,17 @@
 # |---|---|
 # | `os` | File existence checks |
 # | `collections.Counter` | Efficient word-frequency counting |
-# | `numpy` | Dense vector arithmetic |
-# | `pandas` | Dataset loading and tabular manipulation |
-# | `scipy.sparse.csr_matrix` | Memory-efficient sparse matrix for BoW vectors |
-# | `sklearn.feature_extraction.text` | `CountVectorizer`, `TfidfVectorizer` |
-# | `sklearn.linear_model` | Logistic Regression |
-# | `sklearn.svm` | Linear SVM (`LinearSVC`) |
-# | `sklearn.naive_bayes` | Multinomial Naïve Bayes |
-# | `sklearn.model_selection` | `StratifiedKFold`, `cross_validate` |
-# | `sklearn.pipeline` | End-to-end ML pipelines |
-# | `sklearn.compose` | `ColumnTransformer` for multi-field feature fusion |
-# | `sklearn.preprocessing` | `OneHotEncoder`, `StandardScaler` |
-# | `sklearn.impute` | `SimpleImputer` for missing numeric values |
+# | `matplotlib.pyplot` | Class distribution and metric bar-chart visualisations |
+# | `numpy` | Dense vector arithmetic and array concatenation |
+# | `pandas` | Dataset loading, tabular manipulation, results aggregation |
+# | `scipy.sparse` | `csr_matrix` for sparse BoW; `hstack` for sparse concatenation |
+# | `sklearn.feature_extraction.text` | `CountVectorizer` (BoW), `TfidfVectorizer` (TF-IDF weights) |
+# | `sklearn.linear_model` | Logistic Regression classifier |
+# | `sklearn.model_selection` | `StratifiedKFold`, `cross_validate` (5-fold CV) |
+# | `sklearn.pipeline` | `Pipeline` for chaining imputer → scaler / encoder steps |
+# | `sklearn.compose` | `ColumnTransformer` for numeric + categorical feature fusion |
+# | `sklearn.preprocessing` | `StandardScaler` (numeric), `OneHotEncoder` (brand) |
+# | `sklearn.impute` | `SimpleImputer` for missing numeric and categorical values |
 # | `IPython.display` | Formatted DataFrame rendering in Jupyter |
 # #
 # ---
@@ -32,25 +31,26 @@
 # and beauty product reviews dataset.
 # #
 # **Task 2 — Feature Representations** converts pre-processed review text from
-# `processed.csv` into three numeric representations consumed by the classifiers:
+# `processed.csv` into three numeric representations consumed by the classifier:
 # #
 # * **Bag-of-Words (BoW):** Sparse unigram frequency vectors anchored to the
-#   7 241-word vocabulary produced in Task 1 (`vocab.txt`).
+#   vocabulary produced in Task 1 (`vocab.txt`).
 # * **Unweighted GloVe Embeddings:** Dense 300-d vectors formed by averaging the
 #   pre-trained GloVe word embeddings of every token in a review.
 # * **TF-IDF Weighted GloVe Embeddings:** Dense 300-d vectors formed by computing a
 #   TF-IDF–weighted average of GloVe embeddings, down-weighting high-frequency,
 #   low-information tokens so that rarer, topic-specific words carry more influence.
 # #
-# **Task 3 — Classification** addresses two research questions:
+# **Task 3 — Classification** evaluates Logistic Regression across the three
+# representations above and addresses two research questions:
 # #
-# * **Q1:** Which combination of feature representation and classifier achieves the
-#   highest predictive performance on the binary `is_a_buyer` label?
+# * **Q1:** Which feature representation (BoW, Unweighted GloVe, Weighted GloVe)
+#   achieves the highest predictive performance on the binary `is_a_buyer` label?
 # * **Q2:** Does augmenting the review body with additional context — review title,
-#   product metadata, brand, and pricing — improve classification accuracy?
+#   price, rating count, and brand — improve classification accuracy?
 # #
-# All experiments use 5-fold Stratified Cross-Validation to produce reliable,
-# variance-aware performance estimates.
+# All experiments use 5-fold Stratified Cross-Validation. Class distribution is
+# visualised upfront given the imbalanced nature of the `is_a_buyer` label.
 # 
 # %% [markdown]
 # ---
@@ -135,6 +135,14 @@ print(f"First 10 entries : {list(word2idx.items())[:10]}")
 # 
 # %%
 df_task2 = pd.read_csv(PROCESSED_PATH)
+
+# Normalise is_a_buyer to int (0/1) once; handles bool, "TRUE"/"FALSE", "True"/"False"
+df_task2["is_a_buyer"] = (
+    df_task2["is_a_buyer"]
+    .astype(str).str.strip().str.upper()
+    .map({"TRUE": 1, "FALSE": 0})
+)
+
 reviews: list[str] = df_task2["review_text"].fillna("").astype(str).tolist()
 
 print(f"Reviews loaded        : {len(reviews):,}")
@@ -347,8 +355,8 @@ for _test_idx in range(3):
 # ---
 # ## Task 3 — Clothing Review Classification
 # #
-# Using the three representations generated above, we train and evaluate classifiers
-# to predict `is_a_buyer` — whether a reviewer actually purchased the product.
+# Using the three representations generated above, we train and evaluate a Logistic
+# Regression classifier to predict `is_a_buyer` — whether a reviewer purchased the product.
 # 
 # %% [markdown]
 # ### Shared I/O Utilities
@@ -479,11 +487,12 @@ print(f"df_weighted   : {df_weighted.shape}  - is_a_buyer sample: {df_weighted['
 
 # %% [markdown]
 # #### Class Distribution
-
+# 
 # %%
-_class_counts = df_task2["is_a_buyer"].value_counts().sort_index()
-_cls_labels   = ["Not a Buyer (False)", "Buyer (True)"]
-_cls_colors   = ["#e74c3c", "#2ecc71"]
+# df_task2["is_a_buyer"] is already {0, 1} after load-time normalisation
+_class_counts  = df_task2["is_a_buyer"].value_counts().sort_index()   # index: 0, 1
+_cls_labels    = ["Not a Buyer (0)", "Buyer (1)"]
+_cls_colors    = ["#e74c3c", "#2ecc71"]
 
 fig, ax = plt.subplots(figsize=(6, 4))
 _bars = ax.bar(_cls_labels, _class_counts.values, color=_cls_colors,
@@ -498,8 +507,9 @@ ax.set_ylim(0, _class_counts.max() * 1.2)
 plt.tight_layout()
 plt.show()
 
+_majority_cls = "Buyer" if _class_counts.idxmax() == 1 else "Not Buyer"
 print(f"Imbalance ratio : {_class_counts.max() / _class_counts.min():.2f}x  "
-      f"(majority class: {'Buyer' if _class_counts.idxmax() else 'Not Buyer'})")
+      f"(majority class: {_majority_cls})")
 
 # %% [markdown]
 # #### Cross-Validation Helper
@@ -564,7 +574,7 @@ q1_results.append(evaluate_representation(X_weighted, df_weighted['is_a_buyer'],
 
 # %% [markdown]
 # #### Q1 — Representation Comparison Chart
-
+# 
 # %%
 def _parse_mean(val: str) -> float:
     return float(val.split("±")[0].strip())
@@ -618,7 +628,7 @@ plt.show()
 # | Column | BoW | Unweighted GloVe | Weighted GloVe |
 # |---|---|---|---|
 # | `review_text` | ✓ | ✓ | ✓ |
-#
+# #
 # %% [markdown]
 # #### Scenario 2 — Text + Review Title
 # #
@@ -626,7 +636,7 @@ plt.show()
 # |---|---|---|---|
 # | `review_text` | ✓ | ✓ | ✓ |
 # | `review_title` | ✓ | ✓ | ✓ |
-#
+# #
 # %% [markdown]
 # For this scenario, `review_title` is represented three ways — mirroring the Task 2
 # pipeline — and each title representation is concatenated with its matching text
@@ -795,7 +805,7 @@ _num_pipe = Pipeline([
 ])
 _cat_pipe = Pipeline([
     ("impute", SimpleImputer(strategy="most_frequent")),
-    ("ohe",    OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ("ohe",    OneHotEncoder(handle_unknown="ignore")),
 ])
 
 _extra_ct = ColumnTransformer([
@@ -803,12 +813,10 @@ _extra_ct = ColumnTransformer([
     ("cat", _cat_pipe, _CAT_EXTRA),
 ], remainder="drop")
 
-X_extra = _extra_ct.fit_transform(df_s3[_selected_numeric + _CAT_EXTRA])
-if hasattr(X_extra, "toarray"):
-    X_extra = X_extra.toarray()
-X_extra_sp = csr_matrix(X_extra)
+X_extra_sp = _extra_ct.fit_transform(df_s3[_selected_numeric + _CAT_EXTRA])
+X_extra    = X_extra_sp.toarray()   # dense copy used only for np.hstack in GloVe scenarios
 
-print(f"Extra feature matrix : {X_extra.shape}  "
+print(f"Extra feature matrix : {X_extra_sp.shape}  "
       f"({len(_selected_numeric)} numeric + OHE brand_name)")
 
 # %%
@@ -841,7 +849,7 @@ q2_results.append(_res)
 
 # %% [markdown]
 # #### Q2 — Scenario Comparison Chart
-
+# 
 # %%
 # Combine Scenario 1 (from Q1) with Scenario 2 & 3 for a full side-by-side view
 _sc1 = [{**r, "Information Setting": "Text only"} for r in q1_results]
