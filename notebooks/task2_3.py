@@ -69,11 +69,9 @@ from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
-from sklearn.naive_bayes import MultinomialNB
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.svm import LinearSVC
 
 # %% [markdown]
 # ---
@@ -433,16 +431,12 @@ def align_to_dataframe(X, doc_indices: np.ndarray, n_rows: int):
 # ---
 # ### Q1 — Language Model Comparison
 # #
-# **Objective:** Determine which combination of feature representation and classifier
-# achieves the best `is_a_buyer` classification performance.
+# **Objective:** Determine which feature representation achieves the best
+# `is_a_buyer` classification performance using Logistic Regression.
 # #
 # **Representations evaluated:** Bag-of-Words · Unweighted GloVe · TF-IDF Weighted GloVe
 # #
-# **Classifiers evaluated:** Logistic Regression · Linear SVM · Multinomial Naïve Bayes
-# #
-# > **Note:** Multinomial Naïve Bayes requires strictly non-negative inputs.  It is
-# > therefore evaluated only on the Bag-of-Words representation and excluded from the
-# > dense embedding experiments.
+# **Classifier:** Logistic Regression
 # #
 # **Method:** 5-fold Stratified Cross-Validation reporting mean ± std Accuracy,
 # Precision, Recall, and F1.
@@ -482,6 +476,30 @@ df_weighted["is_a_buyer"] = df_task2.loc[idx_weighted, "is_a_buyer"].to_numpy()
 print(f"\ndf_count      : {df_count.shape}  - is_a_buyer sample: {df_count['is_a_buyer'].iloc[:3].tolist()}")
 print(f"df_unweighted : {df_unweighted.shape}  - is_a_buyer sample: {df_unweighted['is_a_buyer'].iloc[:3].tolist()}")
 print(f"df_weighted   : {df_weighted.shape}  - is_a_buyer sample: {df_weighted['is_a_buyer'].iloc[:3].tolist()}")
+
+# %% [markdown]
+# #### Class Distribution
+
+# %%
+_class_counts = df_task2["is_a_buyer"].value_counts().sort_index()
+_cls_labels   = ["Not a Buyer (False)", "Buyer (True)"]
+_cls_colors   = ["#e74c3c", "#2ecc71"]
+
+fig, ax = plt.subplots(figsize=(6, 4))
+_bars = ax.bar(_cls_labels, _class_counts.values, color=_cls_colors,
+               edgecolor="white", width=0.5)
+for _bar, _cnt in zip(_bars, _class_counts.values):
+    ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 200,
+            f"{_cnt:,}\n({_cnt / len(df_task2):.1%})",
+            ha="center", va="bottom", fontsize=10)
+ax.set_ylabel("Number of Reviews")
+ax.set_title("Class Distribution — is_a_buyer")
+ax.set_ylim(0, _class_counts.max() * 1.2)
+plt.tight_layout()
+plt.show()
+
+print(f"Imbalance ratio : {_class_counts.max() / _class_counts.min():.2f}x  "
+      f"(majority class: {'Buyer' if _class_counts.idxmax() else 'Not Buyer'})")
 
 # %% [markdown]
 # #### Cross-Validation Helper
@@ -529,17 +547,51 @@ def evaluate_representation(X, y, representation_name: str,
     }
 
 # %%
+_lr_q1    = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+q1_results = []
+
 # Logistic Regression with count vectors
-evaluate_representation(X_count, df_count['is_a_buyer'], "Bag-of-Words", "Logistic Regression",
-                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
+q1_results.append(evaluate_representation(X_count, df_count['is_a_buyer'],
+                                          "Bag-of-Words", "Logistic Regression", _lr_q1))
 # %%
 # Logistic Regression with unweighted GloVe vectors
-evaluate_representation(X_unweighted, df_unweighted['is_a_buyer'], "Unweighted GloVe", "Logistic Regression",
-                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
+q1_results.append(evaluate_representation(X_unweighted, df_unweighted['is_a_buyer'],
+                                          "Unweighted GloVe", "Logistic Regression", _lr_q1))
 # %%
 # Logistic Regression with weighted GloVe vectors
-evaluate_representation(X_weighted, df_weighted['is_a_buyer'], "Weighted GloVe", "Logistic Regression",
-                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
+q1_results.append(evaluate_representation(X_weighted, df_weighted['is_a_buyer'],
+                                          "Weighted GloVe", "Logistic Regression", _lr_q1))
+
+# %% [markdown]
+# #### Q1 — Representation Comparison Chart
+
+# %%
+def _parse_mean(val: str) -> float:
+    return float(val.split("±")[0].strip())
+
+_q1_metrics = ["Accuracy", "Precision", "Recall", "F1"]
+_q1_reps    = [r["Representation"] for r in q1_results]
+_q1_colors  = ["#3498db", "#e67e22", "#2ecc71"]
+_q1_x       = np.arange(len(_q1_metrics))
+_q1_width   = 0.25
+
+fig, ax = plt.subplots(figsize=(10, 5))
+for _i, (_res, _col) in enumerate(zip(q1_results, _q1_colors)):
+    _vals = [_parse_mean(_res[m]) for m in _q1_metrics]
+    _bars = ax.bar(_q1_x + _i * _q1_width, _vals, _q1_width,
+                   label=_res["Representation"], color=_col, edgecolor="white")
+    for _bar, _val in zip(_bars, _vals):
+        ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+                f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+ax.set_xticks(_q1_x + _q1_width)
+ax.set_xticklabels(_q1_metrics)
+ax.set_ylabel("Score")
+ax.set_ylim(0, 1.1)
+ax.set_title("Q1 — Representation Comparison (Logistic Regression, 5-fold CV)")
+ax.legend(title="Representation")
+plt.tight_layout()
+plt.show()
+
 # %% [markdown]
 # ---
 # ### Q2 — Does Additional Context Improve Classification?
@@ -553,20 +605,28 @@ evaluate_representation(X_weighted, df_weighted['is_a_buyer'], "Weighted GloVe",
 # |---|---|
 # | Text only | `review_text` (Task 2 pre-computed vectors) |
 # | Text + Title | `review_text` + `review_title` |
-# | Text + Title + Extra | above + `product_title`, `brand_name`, `price`, `avg_product_rating`, `product_rating_count` |
+# | Text + Title + Extra | above + `price`, `product_rating_count`, `brand_name` |
 # #
-# For scenarios 2 and 3, sklearn pipelines are built dynamically using
-# `ColumnTransformer` so that each text field is vectorised independently and numeric
-# fields are imputed and scaled before being concatenated into a single feature matrix.
+# For Scenario 3, a `ColumnTransformer` pipeline scales numeric features and one-hot
+# encodes `brand_name` before concatenating them with the text + title vectors.
 # #
 # **Method:** Same 5-fold Stratified CV strategy as Q1 for a fair comparison.
 # 
 # %% [markdown]
 # #### Scenario 1 — Text Only (Task 2 Pre-computed Vectors) - Already Evaluated in Q1
-# 
+# #
+# | Column | BoW | Unweighted GloVe | Weighted GloVe |
+# |---|---|---|---|
+# | `review_text` | ✓ | ✓ | ✓ |
+#
 # %% [markdown]
 # #### Scenario 2 — Text + Review Title
-# 
+# #
+# | Column | BoW | Unweighted GloVe | Weighted GloVe |
+# |---|---|---|---|
+# | `review_text` | ✓ | ✓ | ✓ |
+# | `review_title` | ✓ | ✓ | ✓ |
+#
 # %% [markdown]
 # For this scenario, `review_title` is represented three ways — mirroring the Task 2
 # pipeline — and each title representation is concatenated with its matching text
@@ -649,6 +709,14 @@ q2_results.append(_res)
 # %% [markdown]
 # #### Scenario 3 — Text + Title + Extra Metadata
 # #
+# | Column | BoW | Unweighted GloVe | Weighted GloVe |
+# |---|---|---|---|
+# | `review_text` | ✓ | ✓ | ✓ |
+# | `review_title` | ✓ | ✓ | ✓ |
+# | `price` | scaled | scaled | scaled |
+# | `product_rating_count` | scaled | scaled | scaled |
+# | `brand_name` | OHE | OHE | OHE |
+# #
 # Candidate extra columns (after dropping id columns, `product_url`, `author`,
 # `review_date`, and `review_text` / `review_title` already used):
 # #
@@ -660,8 +728,8 @@ q2_results.append(_res)
 # | `product_rating_count` | numeric |
 # | `brand_name` | categorical |
 # #
-# Numeric features are assessed via Pearson correlation with `is_a_buyer`.
-# `brand_name` is categorical so it is evaluated separately and one-hot encoded if included.
+# A correlation heatmap is used to identify which numeric features have a meaningful
+# relationship with `is_a_buyer`. `brand_name` is one-hot encoded separately.
 # 
 # %%
 # --- Correlation table: numeric features vs is_a_buyer ---
@@ -770,3 +838,43 @@ _res = evaluate_representation(_X_wt_s3, df_weighted["is_a_buyer"].to_numpy(),
                                "Weighted GloVe", "Logistic Regression", _lr_s3)
 _res["Information Setting"] = _extra_label
 q2_results.append(_res)
+
+# %% [markdown]
+# #### Q2 — Scenario Comparison Chart
+
+# %%
+# Combine Scenario 1 (from Q1) with Scenario 2 & 3 for a full side-by-side view
+_sc1 = [{**r, "Information Setting": "Text only"} for r in q1_results]
+_all_scenarios_df = pd.DataFrame(_sc1 + q2_results)
+_all_scenarios_df["_f1_mean"] = _all_scenarios_df["F1"].apply(_parse_mean)
+
+_sc_labels  = ["Text only", "Text + Title", _extra_label]
+_sc_display = ["Scenario 1\n(Text only)", "Scenario 2\n(Text + Title)",
+               "Scenario 3\n(Text + Title\n+ Extra)"]
+_sc_reps    = ["Bag-of-Words", "Unweighted GloVe", "Weighted GloVe"]
+_sc_colors  = ["#3498db", "#e67e22", "#2ecc71"]
+_sc_x       = np.arange(len(_sc_labels))
+_sc_width   = 0.25
+
+fig, ax = plt.subplots(figsize=(12, 5))
+for _i, (_rep, _col) in enumerate(zip(_sc_reps, _sc_colors)):
+    _vals = [
+        _all_scenarios_df[
+            (_all_scenarios_df["Information Setting"] == _sc) &
+            (_all_scenarios_df["Representation"] == _rep)
+        ]["_f1_mean"].values[0]
+        for _sc in _sc_labels
+    ]
+    _bars = ax.bar(_sc_x + _i * _sc_width, _vals, _sc_width,
+                   label=_rep, color=_col, edgecolor="white")
+    for _bar, _val in zip(_bars, _vals):
+        ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+                f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+ax.set_xticks(_sc_x + _sc_width)
+ax.set_xticklabels(_sc_display, fontsize=9)
+ax.set_ylabel("F1 Score")
+ax.set_ylim(0, 1.1)
+ax.set_title("Q2 — Does More Information Help? (F1 Score by Scenario & Representation)")
+ax.legend(title="Representation")
+plt.tight_layout()
+plt.show()
