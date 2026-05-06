@@ -68,7 +68,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -450,27 +450,37 @@ def align_to_dataframe(X, doc_indices: np.ndarray, n_rows: int):
 # #### Load Dataset and Prepare Labels
 # 
 # %%
-# Q1 labels must come from processed.csv — the same file used to build the vectors.
-# Task 1 removed duplicates and reset the index, so row 0 in processed.csv ≠ row 0
-# in the original CSV.  Using the original CSV here would cause label mismatches.
-df = df_task2.copy()
-df["review_text"]  = df["review_text"].fillna("")
+# Load each vector file into a DataFrame and attach the corresponding is_a_buyer label.
+# The #idx field in every vector line is the 0-based row position in processed.csv,
+# so df_task2.loc[idx, "is_a_buyer"] gives the exact label for each vector row.
+X_count,      idx_count      = load_count_vectors(COUNT_VEC_PATH)
+X_unweighted, idx_unweighted = load_dense_vectors(UNWEIGHTED_PATH)
+X_weighted,   idx_weighted   = load_dense_vectors(WEIGHTED_PATH)
 
-# Normalise the is_a_buyer column regardless of whether it arrives as bool or string
-if df["is_a_buyer"].dtype == bool:
-    df["label"] = df["is_a_buyer"].astype(int)
-else:
-    df["label"] = (
-        df["is_a_buyer"].astype(str).str.strip().str.lower()
-        .map({"true": 1, "false": 0})
-    )
+df_count = pd.DataFrame.sparse.from_spmatrix(
+    X_count,
+    index=idx_count,
+    columns=[f"w{i}" for i in range(X_count.shape[1])],
+)
+df_count["is_a_buyer"] = df_task2.loc[idx_count, "is_a_buyer"].to_numpy()
 
-df = df.dropna(subset=["label"]).reset_index(drop=True)
-df["label"] = df["label"].astype(int)
+df_unweighted = pd.DataFrame(
+    X_unweighted,
+    index=idx_unweighted,
+    columns=[f"dim_{i}" for i in range(X_unweighted.shape[1])],
+)
+df_unweighted["is_a_buyer"] = df_task2.loc[idx_unweighted, "is_a_buyer"].to_numpy()
 
-print(f"Dataset          : {df.shape[0]:,} rows × {df.shape[1]} columns")
-print(f"\nLabel distribution:\n{df['label'].value_counts().to_string()}")
-print(f"\nLabel proportion :\n{df['label'].value_counts(normalize=True).round(4).to_string()}")
+df_weighted = pd.DataFrame(
+    X_weighted,
+    index=idx_weighted,
+    columns=[f"dim_{i}" for i in range(X_weighted.shape[1])],
+)
+df_weighted["is_a_buyer"] = df_task2.loc[idx_weighted, "is_a_buyer"].to_numpy()
+
+print(f"\ndf_count      : {df_count.shape}  - is_a_buyer sample: {df_count['is_a_buyer'].iloc[:3].tolist()}")
+print(f"df_unweighted : {df_unweighted.shape}  - is_a_buyer sample: {df_unweighted['is_a_buyer'].iloc[:3].tolist()}")
+print(f"df_weighted   : {df_weighted.shape}  - is_a_buyer sample: {df_weighted['is_a_buyer'].iloc[:3].tolist()}")
 
 # %% [markdown]
 # #### Cross-Validation Helper
@@ -485,16 +495,50 @@ def evaluate_representation(X, y, representation_name: str,
 
     _scores = cross_validate(classifier, X, y, cv=_cv, scoring=_scoring,
                              n_jobs=-1, error_score="raise")
+
+    # Per-fold breakdown
+    print(f"\n  [{representation_name}] {classifier_name}")
+    print(f"  {'Fold':<6} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10}")
+    print(f"  {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+    for _fold in range(5):
+        print(f"  {_fold + 1:<6} "
+              f"{_scores['test_accuracy'][_fold]:>10.4f} "
+              f"{_scores['test_precision'][_fold]:>10.4f} "
+              f"{_scores['test_recall'][_fold]:>10.4f} "
+              f"{_scores['test_f1'][_fold]:>10.4f}")
+    print(f"  {'Mean':<6} "
+          f"{_scores['test_accuracy'].mean():>10.4f} "
+          f"{_scores['test_precision'].mean():>10.4f} "
+          f"{_scores['test_recall'].mean():>10.4f} "
+          f"{_scores['test_f1'].mean():>10.4f}")
+    print(f"  {'Std':<6} "
+          f"{_scores['test_accuracy'].std():>10.4f} "
+          f"{_scores['test_precision'].std():>10.4f} "
+          f"{_scores['test_recall'].std():>10.4f} "
+          f"{_scores['test_f1'].std():>10.4f}")
+
     return {
         "Representation" : representation_name,
         "Classifier"     : classifier_name,
         "Accuracy"       : f"{_scores['test_accuracy'].mean():.4f} ± {_scores['test_accuracy'].std():.4f}",
-        "Precision"      : f"{_scores['test_precision'].mean():.4f}",
-        "Recall"         : f"{_scores['test_recall'].mean():.4f}",
-        "F1"             : f"{_scores['test_f1'].mean():.4f}",
-        "_f1_sort"       : _scores["test_f1"].mean(),   # hidden column used for sorting
+        "Precision"      : f"{_scores['test_precision'].mean():.4f} ± {_scores['test_precision'].std():.4f}",
+        "Recall"         : f"{_scores['test_recall'].mean():.4f} ± {_scores['test_recall'].std():.4f}",
+        "F1"             : f"{_scores['test_f1'].mean():.4f} ± {_scores['test_f1'].std():.4f}",
+        "_f1_sort"       : _scores["test_f1"].mean(),
     }
 
+# %%
+# Logistic Regression with count vectors
+evaluate_representation(X_count, df_count['is_a_buyer'], "Bag-of-Words", "Logistic Regression",
+                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
+# %%
+# Logistic Regression with unweighted GloVe vectors
+evaluate_representation(X_unweighted, df_unweighted['is_a_buyer'], "Unweighted GloVe", "Logistic Regression",
+                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
+# %%
+# Logistic Regression with weighted GloVe vectors
+evaluate_representation(X_weighted, df_weighted['is_a_buyer'], "Weighted GloVe", "Logistic Regression",
+                        LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE))
 # %% [markdown]
 # #### Initialise Classifiers and Load Representations
 # 
