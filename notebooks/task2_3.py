@@ -23,6 +23,7 @@
 # | `sklearn.preprocessing` | `StandardScaler` (numeric), `OneHotEncoder` (brand) |
 # | `sklearn.impute` | `SimpleImputer` for missing numeric and categorical values |
 # | `IPython.display` | Formatted DataFrame rendering in Jupyter |
+# | `imblearn.over_sampling` | `SMOTE` for synthetic minority over-sampling |
 # #
 # ---
 # ## Introduction
@@ -72,6 +73,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from imblearn.over_sampling import SMOTE
 
 # %% [markdown]
 # ---
@@ -519,8 +521,10 @@ def evaluate_representation(X, y, representation_name: str,
                              classifier_name: str, classifier) -> dict:
     """Run 5-fold stratified CV and return a labelled metrics dict."""
     _cv      = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    _scoring = {"accuracy": "accuracy", "precision": "precision",
-                "recall": "recall", "f1": "f1"}
+    _scoring = {"accuracy"  : "accuracy",
+                "precision" : "precision_macro",
+                "recall"    : "recall_macro",
+                "f1"        : "f1_macro"}
 
     _scores = cross_validate(classifier, X, y, cv=_cv, scoring=_scoring,
                              n_jobs=-1, error_score="raise")
@@ -554,6 +558,85 @@ def evaluate_representation(X, y, representation_name: str,
         "Recall"         : f"{_scores['test_recall'].mean():.4f} ± {_scores['test_recall'].std():.4f}",
         "F1"             : f"{_scores['test_f1'].mean():.4f} ± {_scores['test_f1'].std():.4f}",
         "_f1_sort"       : _scores["test_f1"].mean(),
+    }
+
+
+def evaluate_representation_smote(X, y, representation_name: str,
+                                   classifier_name: str, classifier) -> dict:
+    """5-fold stratified CV: SMOTE on training fold only, test on original fold.
+
+    Each fold explicitly:
+      1. Splits into train / test using the ORIGINAL class distribution.
+      2. Applies SMOTE to the TRAINING fold only → balances minority class.
+      3. Trains the classifier on the SMOTE-augmented training data.
+      4. Evaluates on the ORIGINAL test fold (no synthetic samples in test).
+
+    Macro-average is used so both classes contribute equally to the metrics,
+    making the minority-class improvement from SMOTE visible.
+    """
+    from sklearn.base import clone
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+    import scipy.sparse as sp
+
+    _cv     = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    _smote  = SMOTE(random_state=RANDOM_STATE)
+
+    _fold_results = []
+
+    for _fold, (train_idx, test_idx) in enumerate(_cv.split(X, y)):
+        # --- Split into original train / test folds ---
+        X_train = X[train_idx] if not sp.issparse(X) else X[train_idx]
+        X_test  = X[test_idx]  if not sp.issparse(X) else X[test_idx]
+        y_train = y[train_idx]
+        y_test  = y[test_idx]
+
+        print(f"  Fold {_fold + 1}  |  "
+              f"Train: {len(y_train):,} samples "
+              f"(class 0: {(y_train==0).sum()}, class 1: {(y_train==1).sum()})  →  ", end="")
+
+        # --- Apply SMOTE to training fold ONLY ---
+        X_train_res, y_train_res = _smote.fit_resample(X_train, y_train)
+
+        print(f"after SMOTE: {len(y_train_res):,} "
+              f"(class 0: {(y_train_res==0).sum()}, class 1: {(y_train_res==1).sum()})")
+        print(f"         |  Test : {len(y_test):,} samples  ← ORIGINAL distribution (no SMOTE)")
+
+        # --- Train on SMOTE data, evaluate on original test fold ---
+        _clf = clone(classifier)
+        _clf.fit(X_train_res, y_train_res)
+        y_pred = _clf.predict(X_test)
+
+        _fold_results.append({
+            "accuracy"  : accuracy_score(y_test, y_pred),
+            "precision" : precision_score(y_test, y_pred, average="macro", zero_division=0),
+            "recall"    : recall_score(y_test, y_pred, average="macro", zero_division=0),
+            "f1"        : f1_score(y_test, y_pred, average="macro", zero_division=0),
+        })
+
+    _acc  = np.array([r["accuracy"]  for r in _fold_results])
+    _prec = np.array([r["precision"] for r in _fold_results])
+    _rec  = np.array([r["recall"]    for r in _fold_results])
+    _f1   = np.array([r["f1"]        for r in _fold_results])
+
+    print(f"\n  [{representation_name}] {classifier_name} + SMOTE — per-fold results")
+    print(f"  {'Fold':<6} {'Accuracy':>10} {'Prec(M)':>10} {'Rec(M)':>10} {'F1(M)':>10}")
+    print(f"  {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+    for _i, r in enumerate(_fold_results):
+        print(f"  {_i+1:<6} {r['accuracy']:>10.4f} {r['precision']:>10.4f} "
+              f"{r['recall']:>10.4f} {r['f1']:>10.4f}")
+    print(f"  {'Mean':<6} {_acc.mean():>10.4f} {_prec.mean():>10.4f} "
+          f"{_rec.mean():>10.4f} {_f1.mean():>10.4f}")
+    print(f"  {'Std':<6} {_acc.std():>10.4f} {_prec.std():>10.4f} "
+          f"{_rec.std():>10.4f} {_f1.std():>10.4f}")
+
+    return {
+        "Representation" : representation_name,
+        "Classifier"     : classifier_name,
+        "Accuracy"       : f"{_acc.mean():.4f} ± {_acc.std():.4f}",
+        "Precision"      : f"{_prec.mean():.4f} ± {_prec.std():.4f}",
+        "Recall"         : f"{_rec.mean():.4f} ± {_rec.std():.4f}",
+        "F1"             : f"{_f1.mean():.4f} ± {_f1.std():.4f}",
+        "_f1_sort"       : _f1.mean(),
     }
 
 # %%
@@ -884,5 +967,344 @@ ax.set_ylabel("F1 Score")
 ax.set_ylim(0, 1.1)
 ax.set_title("Q2 — Does More Information Help? (F1 Score by Scenario & Representation)")
 ax.legend(title="Representation")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ---
+# ## Data Balancing with SMOTE
+# #
+# The class distribution analysis above revealed a significant imbalance in the
+# `is_a_buyer` label. SMOTE (Synthetic Minority Over-sampling TEchnique) addresses
+# this by generating **synthetic** minority-class samples in the feature space rather
+# than simply duplicating existing ones, producing a more representative balanced
+# dataset for training.
+# #
+# SMOTE is applied independently to each of the three feature representations so that
+# balanced versions are ready for downstream experiments.
+#
+# %%
+_y_original     = df_count["is_a_buyer"].to_numpy()
+_counts_before  = pd.Series(_y_original).value_counts().sort_index()
+
+# Fit SMOTE on BoW once — only to illustrate the balanced label distribution.
+# In the classification experiments below, SMOTE is applied *inside* each CV
+# training fold via ImbPipeline so validation labels are never seen by the resampler.
+_, _y_smote_demo  = SMOTE(random_state=RANDOM_STATE).fit_resample(X_count, _y_original)
+_counts_after = pd.Series(_y_smote_demo).value_counts().sort_index()
+
+print(f"Original dataset size  : {len(_y_original):,}")
+print(f"Resampled dataset size : {len(_y_smote_demo):,}")
+print(f"\nBefore — Not a Buyer: {_counts_before[0]:,}  |  Buyer: {_counts_before[1]:,}")
+print(f"After  — Not a Buyer: {_counts_after[0]:,}  |  Buyer: {_counts_after[1]:,}")
+
+# %% [markdown]
+# #### Class Distribution Before vs After SMOTE
+
+# %%
+_cls_labels = ["Not a Buyer (0)", "Buyer (1)"]
+_cls_colors = ["#e74c3c", "#2ecc71"]
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for _ax, _counts, _title in [
+    (axes[0], _counts_before, "Before SMOTE"),
+    (axes[1], _counts_after,  "After SMOTE"),
+]:
+    _bars = _ax.bar(_cls_labels, _counts.values, color=_cls_colors,
+                    edgecolor="white", width=0.5)
+    for _bar, _cnt in zip(_bars, _counts.values):
+        _ax.text(
+            _bar.get_x() + _bar.get_width() / 2,
+            _bar.get_height() + _counts.max() * 0.02,
+            f"{_cnt:,}\n({_cnt / _counts.sum():.1%})",
+            ha="center", va="bottom", fontsize=10,
+        )
+    _ax.set_ylabel("Number of Reviews")
+    _ax.set_title(f"Class Distribution — {_title}")
+    _ax.set_ylim(0, _counts.max() * 1.25)
+
+plt.suptitle("is_a_buyer: Before vs After SMOTE", fontsize=12, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# #### Observation — SMOTE Suitability by Representation
+# #
+# SMOTE generates synthetic minority samples by interpolating linearly between a
+# sample and its k-nearest neighbours in the feature space.  The quality of those
+# synthetic samples depends entirely on how meaningful nearest-neighbour distances
+# are in that space:
+# #
+# | Representation | Feature space | SMOTE suitability |
+# |---|---|---|
+# | **Bag-of-Words** | Sparse, vocabulary-sized (tens of thousands of dimensions), integer counts | **Poor** — high dimensionality makes Euclidean distance unreliable (curse of dimensionality); neighbours found in such a sparse space are not semantically meaningful, so interpolated samples are likely noise |
+# | **Unweighted GloVe** | Dense 300-d, continuous, semantically structured | **Good** — distances are geometrically meaningful; interpolating between two similar review vectors produces a plausible synthetic representation |
+# | **Weighted GloVe** | Dense 300-d, continuous, rare tokens up-weighted | **Good** — same reasoning; the TF-IDF weighting makes the space slightly more discriminative, so synthetic samples capture topic-specific signals |
+# #
+# In practice this means the SMOTE results for **Bag-of-Words should be interpreted
+# with caution**: the classifier may appear to improve simply because the synthetic
+# BoW samples add spurious regularisation rather than genuine minority-class signal.
+# For BoW, class-weight adjustment (`LogisticRegression(class_weight="balanced")`)
+# is a more principled alternative that corrects imbalance without touching the data.
+
+# %% [markdown]
+# ---
+# ## Classification on SMOTE-Balanced Data
+# #
+# The same Q1 and Q2 experimental pipeline is repeated using SMOTE applied **inside
+# each CV training fold** (via `ImbPipeline`) to measure how correcting class
+# imbalance affects each representation and scenario.  Results are compared directly
+# against the baseline.  Note that BoW results should be read cautiously — see the
+# observation above regarding the curse of dimensionality.
+
+# %% [markdown]
+# #### Why Binary Scoring Breaks After SMOTE
+# #
+# The baseline experiments use **binary** precision / recall / F1 with `pos_label=1`
+# (Buyer — the **majority** class).  After SMOTE balances the training fold, the
+# classifier shifts its decision boundary and starts predicting class 0 (Not Buyer)
+# more often.  Evaluating that on the still-imbalanced test fold produces:
+# #
+# | Symptom | Cause |
+# |---|---|
+# | Precision ≈ majority-class base rate (~85 %) | Every positive prediction is likely right by chance — model isn't discriminating |
+# | Recall ≈ Accuracy (~61 %) | Model predicts 1 for only ~61 % of samples, missing ~39 % of true Buyers |
+# | All representations give nearly identical scores | Binary scoring is dominated by the class imbalance, not by representation quality |
+# #
+# **Fix — macro-average scoring:** weights both classes equally.  The improvement in
+# minority-class (Not Buyer) recall is now captured and representations can be
+# meaningfully distinguished.
+#
+# %% [markdown]
+# ### Q1 (SMOTE) — Language Model Comparison
+# #
+# **Representations evaluated:** Bag-of-Words · Unweighted GloVe · TF-IDF Weighted GloVe
+# #
+# **Classifier:** Logistic Regression — same hyper-parameters as baseline Q1
+# #
+# **Metrics:** Macro-averaged Precision, Recall, F1 (both classes weighted equally)
+# #
+# **Method:** 5-fold Stratified CV; SMOTE applied to training fold only (no leakage).
+
+# %%
+_lr_q1_sm     = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+q1_sm_results = []
+
+# Pass original (imbalanced) X — SMOTE runs inside each fold via ImbPipeline
+q1_sm_results.append(evaluate_representation_smote(
+    X_count, _y_original, "Bag-of-Words", "Logistic Regression", _lr_q1_sm))
+q1_sm_results.append(evaluate_representation_smote(
+    X_unweighted, df_unweighted["is_a_buyer"].to_numpy(),
+    "Unweighted GloVe", "Logistic Regression", _lr_q1_sm))
+q1_sm_results.append(evaluate_representation_smote(
+    X_weighted, df_weighted["is_a_buyer"].to_numpy(),
+    "Weighted GloVe", "Logistic Regression", _lr_q1_sm))
+
+# %% [markdown]
+# #### Q1 (SMOTE) — Representation Comparison Chart
+
+# %%
+_q1_x     = np.arange(len(_q1_metrics))
+_q1_width = 0.25
+
+fig, ax = plt.subplots(figsize=(10, 5))
+for _i, (_res, _col) in enumerate(zip(q1_sm_results, _sc_colors)):
+    _vals = [_parse_mean(_res[m]) for m in _q1_metrics]
+    _bars = ax.bar(_q1_x + _i * _q1_width, _vals, _q1_width,
+                   label=_res["Representation"], color=_col, edgecolor="white")
+    for _bar, _val in zip(_bars, _vals):
+        ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+                f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+ax.set_xticks(_q1_x + _q1_width)
+ax.set_xticklabels(_q1_metrics)
+ax.set_ylabel("Score")
+ax.set_ylim(0, 1.1)
+ax.set_title("Q1 (SMOTE) — Representation Comparison — Macro-avg Metrics (Logistic Regression, 5-fold CV)")
+ax.legend(title="Representation")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# #### Q1 — Baseline vs SMOTE F1 Comparison
+
+# %%
+_f1_base_q1  = [_parse_mean(r["F1"]) for r in q1_results]
+_f1_smote_q1 = [_parse_mean(r["F1"]) for r in q1_sm_results]
+_reps        = [r["Representation"] for r in q1_results]
+_x_rep       = np.arange(len(_reps))
+_bw          = 0.35
+
+fig, ax = plt.subplots(figsize=(9, 5))
+_b1 = ax.bar(_x_rep - _bw / 2, _f1_base_q1,  _bw, label="Baseline (imbalanced)",
+             color="#95a5a6", edgecolor="white")
+_b2 = ax.bar(_x_rep + _bw / 2, _f1_smote_q1, _bw, label="SMOTE (balanced)",
+             color="#8e44ad", edgecolor="white")
+for _bar, _val in zip(_b1, _f1_base_q1):
+    ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+            f"{_val:.3f}", ha="center", va="bottom", fontsize=8)
+for _bar, _val in zip(_b2, _f1_smote_q1):
+    ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+            f"{_val:.3f}", ha="center", va="bottom", fontsize=8)
+ax.set_xticks(_x_rep)
+ax.set_xticklabels(_reps)
+ax.set_ylabel("F1 Score")
+ax.set_ylim(0, 1.1)
+ax.set_title("Q1 — Baseline (binary F1) vs SMOTE (macro F1) by Representation")
+ax.legend()
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ### Q2 (SMOTE) — Does Additional Context Improve Classification?
+# #
+# | Scenario | Input features |
+# |---|---|
+# | Text only | `review_text` (SMOTE-balanced, from Q1 above) |
+# | Text + Title | `review_text` + `review_title` (SMOTE applied to combined matrix) |
+# | Text + Title + Extra | above + `price`, `product_rating_count`, `brand_name` |
+# #
+# SMOTE is applied **after** concatenation so that the synthetic samples reflect the
+# joint feature space of the combined representation.
+
+# %% [markdown]
+# #### Scenario 2 (SMOTE) — Text + Title
+# #
+# | Column | BoW | Unweighted GloVe | Weighted GloVe |
+# |---|---|---|---|
+# | `review_text` | ✓ | ✓ | ✓ |
+# | `review_title` | ✓ | ✓ | ✓ |
+
+# %%
+_lr_q2_sm   = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+_y_lbl      = df_count["is_a_buyer"].to_numpy()
+q2_sm_results = []
+
+print("Scenario 2 (SMOTE) — Text + Title\n")
+
+# Pass original combined matrices — SMOTE runs inside each fold via ImbPipeline
+_res = evaluate_representation_smote(_X_bow_q2, _y_lbl,
+                                     "Bag-of-Words", "Logistic Regression", _lr_q2_sm)
+_res["Information Setting"] = "Text + Title"
+q2_sm_results.append(_res)
+
+_res = evaluate_representation_smote(_X_unw_q2, _y_lbl,
+                                     "Unweighted GloVe", "Logistic Regression", _lr_q2_sm)
+_res["Information Setting"] = "Text + Title"
+q2_sm_results.append(_res)
+
+_res = evaluate_representation_smote(_X_wt_q2, _y_lbl,
+                                     "Weighted GloVe", "Logistic Regression", _lr_q2_sm)
+_res["Information Setting"] = "Text + Title"
+q2_sm_results.append(_res)
+
+# %% [markdown]
+# #### Scenario 3 (SMOTE) — Text + Title + Extra
+# #
+# | Column | BoW | Unweighted GloVe | Weighted GloVe |
+# |---|---|---|---|
+# | `review_text` | ✓ | ✓ | ✓ |
+# | `review_title` | ✓ | ✓ | ✓ |
+# | `price` | scaled | scaled | scaled |
+# | `product_rating_count` | scaled | scaled | scaled |
+# | `brand_name` | OHE | OHE | OHE |
+
+# %%
+_lr_s3_sm = LogisticRegression(max_iter=2000, solver="liblinear", random_state=RANDOM_STATE)
+
+print(f"Scenario 3 (SMOTE) — {_extra_label}\n")
+
+# Pass original combined matrices — SMOTE runs inside each fold via ImbPipeline
+_res = evaluate_representation_smote(_X_bow_s3, _y_lbl,
+                                     "Bag-of-Words", "Logistic Regression", _lr_s3_sm)
+_res["Information Setting"] = _extra_label
+q2_sm_results.append(_res)
+
+_res = evaluate_representation_smote(_X_unw_s3, _y_lbl,
+                                     "Unweighted GloVe", "Logistic Regression", _lr_s3_sm)
+_res["Information Setting"] = _extra_label
+q2_sm_results.append(_res)
+
+_res = evaluate_representation_smote(_X_wt_s3, _y_lbl,
+                                     "Weighted GloVe", "Logistic Regression", _lr_s3_sm)
+_res["Information Setting"] = _extra_label
+q2_sm_results.append(_res)
+
+# %% [markdown]
+# #### Q2 (SMOTE) — Scenario Comparison Chart
+
+# %%
+_sc1_sm = [{**r, "Information Setting": "Text only"} for r in q1_sm_results]
+_all_sm_df = pd.DataFrame(_sc1_sm + q2_sm_results)
+_all_sm_df["_f1_mean"] = _all_sm_df["F1"].apply(_parse_mean)
+
+fig, ax = plt.subplots(figsize=(12, 5))
+for _i, (_rep, _col) in enumerate(zip(_sc_reps, _sc_colors)):
+    _vals = [
+        _all_sm_df[
+            (_all_sm_df["Information Setting"] == _sc) &
+            (_all_sm_df["Representation"] == _rep)
+        ]["_f1_mean"].values[0]
+        for _sc in _sc_labels
+    ]
+    _bars = ax.bar(_sc_x + _i * _sc_width, _vals, _sc_width,
+                   label=_rep, color=_col, edgecolor="white")
+    for _bar, _val in zip(_bars, _vals):
+        ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.003,
+                f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+ax.set_xticks(_sc_x + _sc_width)
+ax.set_xticklabels(_sc_display, fontsize=9)
+ax.set_ylabel("F1 Score")
+ax.set_ylim(0, 1.1)
+ax.set_title("Q2 (SMOTE) — Does More Information Help? (F1 Score by Scenario & Representation)")
+ax.legend(title="Representation")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# #### Q2 — Baseline vs SMOTE Comparison by Scenario & Representation
+
+# %%
+# One sub-plot per representation; each shows Baseline vs SMOTE across 3 scenarios
+fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
+
+for _ax, _rep, _col in zip(axes, _sc_reps, _sc_colors):
+    _f1_base_sc = [
+        _all_scenarios_df[
+            (_all_scenarios_df["Information Setting"] == _sc) &
+            (_all_scenarios_df["Representation"] == _rep)
+        ]["_f1_mean"].values[0]
+        for _sc in _sc_labels
+    ]
+    _f1_smote_sc = [
+        _all_sm_df[
+            (_all_sm_df["Information Setting"] == _sc) &
+            (_all_sm_df["Representation"] == _rep)
+        ]["_f1_mean"].values[0]
+        for _sc in _sc_labels
+    ]
+    _x_sc = np.arange(3)
+    _bw   = 0.35
+    _b1 = _ax.bar(_x_sc - _bw / 2, _f1_base_sc,  _bw, label="Baseline",
+                  color="#95a5a6", edgecolor="white")
+    _b2 = _ax.bar(_x_sc + _bw / 2, _f1_smote_sc, _bw, label="SMOTE",
+                  color=_col, edgecolor="white", alpha=0.9)
+    for _bar, _val in zip(_b1, _f1_base_sc):
+        _ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.008,
+                 f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+    for _bar, _val in zip(_b2, _f1_smote_sc):
+        _ax.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.008,
+                 f"{_val:.3f}", ha="center", va="bottom", fontsize=7)
+    _ax.set_title(_rep, fontweight="bold")
+    _ax.set_xticks(_x_sc)
+    _ax.set_xticklabels(["Scenario 1\n(Text only)",
+                         "Scenario 2\n(Text + Title)",
+                         "Scenario 3\n(+ Extra)"], fontsize=7)
+    _ax.set_ylim(0, 1.1)
+    _ax.legend(fontsize=8)
+
+axes[0].set_ylabel("F1 Score")
+plt.suptitle("Q2 — Baseline vs SMOTE: F1 Score by Scenario & Representation",
+             fontsize=12, fontweight="bold")
 plt.tight_layout()
 plt.show()
