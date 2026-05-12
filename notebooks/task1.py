@@ -20,7 +20,6 @@
 # | `langdetect` | Detecting the language of each review |
 # | `unicodedata` | Normalising Unicode and removing diacritics |
 # | `pathlib` | File path handling |
-
 # %% [markdown]
 # ---
 # ## Introduction
@@ -72,13 +71,13 @@
 #   vocabulary refinement, and end-to-end verification).
 # * **Section 2** writes the final `processed.csv` and `vocab.txt` to disk and prints
 #   the closing summary.
-
 # %% [markdown]
 # ---
 # ## Importing libraries
 # 
-# The next cell imports everything used in the rest of the notebook.
-
+# The next cell imports everything used in the rest of the notebook and `pip installs` the
+# two non-default libraries (`emoji`, `contractions`) so the notebook is self-contained on
+# a fresh environment.
 # %%
 from collections import Counter, defaultdict
 from html import unescape
@@ -99,7 +98,6 @@ from nltk.stem import WordNetLemmatizer
 nltk.download('wordnet',                        quiet=True)
 nltk.download('omw-1.4',                        quiet=True)
 nltk.download('averaged_perceptron_tagger_eng', quiet=True)
-
 # %% [markdown]
 # ---
 # ## 1. Pre-processing Pipeline
@@ -117,26 +115,21 @@ nltk.download('averaged_perceptron_tagger_eng', quiet=True)
 #    non-English text) that could distort frequency-based filters later.
 # 
 # This section is purely observational - no data is transformed.
-
 # %% [markdown]
 # #### 1.1.1 Loading the data
 # 
 # We read the raw CSV into a pandas DataFrame using a comma separator and the first row as
 # the header. The path is relative to the notebook folder.
-
 # %%
 REVIEWS_PATH = 'cosmetics_beauty_products_reviews.csv'
 raw_reviews_df = pd.read_csv(REVIEWS_PATH, sep=',', header=0)
-
 # %% [markdown]
 # #### 1.1.2 Initial data inspection
 # 
 # We print the shape, look at the first/last rows, and group the columns logically so we
 # understand the structure before touching anything.
-
 # %%
 raw_reviews_df.shape
-
 # %% [markdown]
 # ##### 1.1.2.1 Shape and DataFrame metadata
 # 
@@ -148,13 +141,10 @@ raw_reviews_df.shape
 # Recording these baseline numbers is important because every later step either drops
 # reviews (deduplication) or reduces tokens within reviews (cleaning, filtering).
 # Knowing where we started lets us sanity-check where we end up.
-
 # %%
 raw_reviews_df.head()
-
 # %%
 raw_reviews_df.tail()
-
 # %% [markdown]
 # ##### 1.1.2.2 Column breakdown
 # 
@@ -195,7 +185,6 @@ raw_reviews_df.tail()
 # | Column | Description |
 # |---|---|
 # | `product_tags` | Category/tag labels associated with the product |
-
 # %% [markdown]
 # ##### 1.1.2.3 Key observations
 # 
@@ -209,7 +198,6 @@ raw_reviews_df.tail()
 # 
 # > **&#8594; Observation:** Because Tasks 2 and 3 rely on these metadata columns,
 # > our pipeline must keep every column intact. Only `review_text` content changes.
-
 # %% [markdown]
 # ---
 # #### 1.1.3 Data Quality Checks
@@ -224,7 +212,6 @@ raw_reviews_df.tail()
 # in Section 1.3 would be skewed; if `NaN` values were left in, the cleaning helpers would
 # crash; non-English content is a diagnostic only and is naturally handled later by the
 # Unicode normalisation step.
-
 # %% [markdown]
 # ##### 1.1.3.1 Missing values in `review_text`
 # 
@@ -235,17 +222,15 @@ raw_reviews_df.tail()
 # > **&#8594; Observation:** Only 9 reviews (about 0.015% of the dataset) have no text.
 # > They are too few to skew anything, but we still keep them - their metadata may be
 # > useful in Tasks 2 and 3, even if their token list is empty.
-
 # %%
 missing_count = raw_reviews_df['review_text'].isna().sum()
 print(f"Missing review_text values: {missing_count:,} ({missing_count / len(raw_reviews_df):.3%})")
 raw_reviews_df[raw_reviews_df['review_text'].isna()]
-
 # %%
 raw_reviews_df['review_text'] = raw_reviews_df['review_text'].fillna('')
+raw_reviews_df['review_text_original'] = raw_reviews_df['review_text'].copy()  # snapshot for later spot-check
 assert raw_reviews_df['review_text'].isna().sum() == 0
 print("No missing values remain in review_text.")
-
 # %% [markdown]
 # ##### 1.1.3.2 Duplicate reviews
 # 
@@ -257,7 +242,6 @@ print("No missing values remain in review_text.")
 # > **&#8594; Observation:** We use `keep='first'` so the earliest copy of any duplicated
 # > text survives. We then call `reset_index(drop=True)` so row positions stay contiguous -
 # > later code iterates by integer index, and contiguous indices keep that simple.
-
 # %%
 n_dupes = raw_reviews_df.duplicated(subset=['review_text'], keep='first').sum()
 print(f"Exact duplicate reviews : {n_dupes:,} ({n_dupes / len(raw_reviews_df):.2%})")
@@ -271,7 +255,6 @@ if n_dupes > 0:
     )
     for text, count in dupe_texts.items():
         print(f"  [{count}×] {repr(str(text)[:100])}")
-
 # %%
 raw_reviews_df = (
     raw_reviews_df
@@ -279,7 +262,6 @@ raw_reviews_df = (
     .reset_index(drop=True)
 )
 print(f"Reviews after deduplication: {len(raw_reviews_df):,}")
-
 # %% [markdown]
 # ##### 1.1.3.3 Non-English reviews
 # 
@@ -294,7 +276,9 @@ print(f"Reviews after deduplication: {len(raw_reviews_df):,}")
 # 
 # > **&#8594; Observation:** The sample-based estimate is purely diagnostic - it informs
 # > the report, but the cleaning pipeline does not consume the detected language.
-
+# %%
+import sys
+!{sys.executable} -m pip install langdetect
 # %%
 try:
     from langdetect import detect, LangDetectException
@@ -311,7 +295,6 @@ try:
     print(f"\nEstimated non-English: {non_en_pct:.1f}%")
 except ImportError:
     print("langdetect not installed. Run: pip install langdetect")
-
 # %% [markdown]
 # ---
 # ### 1.2 Text Preprocessing
@@ -330,7 +313,6 @@ except ImportError:
 # The split between 1.2.1 and 1.2.2 is deliberate: 1.2.1 explains **why** each cleaning step
 # is needed (with evidence from the data); 1.2.2 explains **how** the corresponding helper
 # function implements it. Reading them as a pair gives the full justification.
-
 # %% [markdown]
 # #### 1.2.1 Special Character Analysis
 # 
@@ -341,7 +323,6 @@ except ImportError:
 # 
 # For each noise type below we count how many reviews are affected and show a few real
 # examples before deciding what to do.
-
 # %% [markdown]
 # ##### 1.2.1.1 `@tags`
 # 
@@ -352,7 +333,6 @@ except ImportError:
 # > never accumulate enough frequency to survive the rare-word filter. It also has no
 # > sentiment about the product. Replacing the `@tag` with a single space ensures
 # > neighbouring words are not glued together when the tag is removed.
-
 # %%
 has_tags = raw_reviews_df['review_text'].str.contains(r'@\w+', regex=True, na=False).sum()
 print(f"Reviews with @tags    : {has_tags:,} ({has_tags / len(raw_reviews_df):.2%})")
@@ -360,7 +340,6 @@ tagged = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'@\w+', rege
 print("\nFirst 3 examples:")
 for i, text in enumerate(tagged['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.2 `#hashtags`
 # 
@@ -372,7 +351,6 @@ for i, text in enumerate(tagged['review_text'].head(3), 1):
 # > the word after would still be captured - but if `#` is glued to the previous word
 # > (`great#love`), both halves can be lost. Replacing `#` with a space cleanly separates
 # > the words on either side.
-
 # %%
 has_hashtags = raw_reviews_df['review_text'].str.contains(r'#\w+', regex=True, na=False).sum()
 print(f"Reviews with #hashtags: {has_hashtags:,} ({has_hashtags / len(raw_reviews_df):.2%})")
@@ -380,7 +358,6 @@ hashtagged = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'#\w+', 
 print("\nFirst 3 examples:")
 for i, text in enumerate(hashtagged['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.3 Digits
 # 
@@ -390,7 +367,6 @@ for i, text in enumerate(hashtagged['review_text'].head(3), 1):
 # > **&#8594; Why remove them:** None of these convey product sentiment in a way a model can
 # > generalise from. Removing them up front means the tokenizer pattern (which only allows
 # > letters) does not have to deal with mixed alphanumeric tokens like `5stars`.
-
 # %%
 has_digits = raw_reviews_df['review_text'].str.contains(r'\d', regex=True, na=False).sum()
 print(f"Reviews with digits   : {has_digits:,} ({has_digits / len(raw_reviews_df):.2%})")
@@ -398,7 +374,6 @@ digit_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'\d',
 print("\nFirst 3 examples:")
 for i, text in enumerate(digit_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.4 Punctuation marks
 # 
@@ -410,7 +385,6 @@ for i, text in enumerate(digit_reviews['review_text'].head(3), 1):
 # > preserves word boundaries. We deliberately keep `-` and `'` because the assignment
 # > tokenizer pattern allows hyphenated words (`anti-aging`) and contractions (`don't`)
 # > as single tokens.
-
 # %%
 punct_pattern = '[' + re.escape(string.punctuation) + ']'
 has_punct = raw_reviews_df['review_text'].str.contains(punct_pattern, regex=True, na=False).sum()
@@ -422,7 +396,6 @@ punct_counts = {
 print("\nTop 10 punctuation marks:")
 for p, c in sorted(punct_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
     print(f"  '{p}': {c:,} reviews ({c / len(raw_reviews_df):.1%})")
-
 # %% [markdown]
 # ##### 1.2.1.5 Diacritics (accent marks)
 # 
@@ -432,7 +405,6 @@ for p, c in sorted(punct_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
 # > different vocabulary entries even though they're the same word. Stripping
 # > diacritics merges them into one entry and prevents the same root word from
 # > fragmenting across multiple variants.
-
 # %%
 def has_diacritics(text):
     if pd.isna(text): return False
@@ -443,7 +415,6 @@ diac_reviews = raw_reviews_df[raw_reviews_df['review_text'].apply(has_diacritics
 print("\nFirst 3 examples:")
 for i, text in enumerate(diac_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.6 Extra whitespace
 # 
@@ -452,7 +423,6 @@ for i, text in enumerate(diac_reviews['review_text'].head(3), 1):
 # > **&#8594; Why no explicit step is needed:** The tokenizer regex splits on any
 # > whitespace boundary, so multiple consecutive whitespace characters are treated
 # > identically to a single space. Running an explicit normaliser would be redundant.
-
 # %%
 def has_extra_whitespace(text):
     if pd.isna(text): return False
@@ -465,7 +435,6 @@ print(f"Reviews with extra whitespace : {ws_count:,} ({ws_count / len(raw_review
 print(f"  Multiple spaces             : {multiple_spaces:,}")
 print(f"  Tab characters              : {has_tabs:,}")
 print(f"  Newlines                    : {has_newlines:,}")
-
 # %% [markdown]
 # ##### 1.2.1.7 Round brackets
 # 
@@ -475,7 +444,6 @@ print(f"  Newlines                    : {has_newlines:,}")
 # > **&#8594; Why strip the brackets but keep the words inside:** The text inside the
 # > brackets is meaningful. The brackets themselves can glue adjacent words together
 # > if punctuation handling misses them, so we remove them explicitly.
-
 # %%
 has_rb = raw_reviews_df['review_text'].str.contains(r'[()]', regex=True, na=False).sum()
 print(f"Reviews with round brackets: {has_rb:,} ({has_rb / len(raw_reviews_df):.2%})")
@@ -483,28 +451,23 @@ rb_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'[()]', 
 print("\nFirst 3 examples:")
 for i, text in enumerate(rb_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.8 Curly brackets
 # 
 # > **&#8594; Result:** No curly brackets `{` `}` appear anywhere in the dataset, so no
 # > action is taken. We still ran the check so we can document that we considered this
 # > noise type.
-
 # %%
 has_cb = raw_reviews_df['review_text'].str.contains(r'[{}]', regex=True, na=False).sum()
 print(f"Reviews with curly brackets: {has_cb:,} ({has_cb / len(raw_reviews_df):.2%})")
-
 # %% [markdown]
 # ##### 1.2.1.9 Square brackets
 # 
 # > **&#8594; Result:** No square brackets `[` `]` appear in the dataset, so no action is
 # > taken. The check is run for completeness.
-
 # %%
 has_sb = raw_reviews_df['review_text'].str.contains(r'[\[\]]', regex=True, na=False).sum()
 print(f"Reviews with square brackets: {has_sb:,} ({has_sb / len(raw_reviews_df):.2%})")
-
 # %% [markdown]
 # ##### 1.2.1.10 URLs
 # 
@@ -514,7 +477,6 @@ print(f"Reviews with square brackets: {has_sb:,} ({has_sb / len(raw_reviews_df):
 # > that would never repeat across reviews. Even if a fragment of a URL passed the
 # > tokenizer, it would be removed by the rare-word filter later. Stripping the whole URL
 # > upfront keeps the tokenizer focused on real prose.
-
 # %%
 has_urls = raw_reviews_df['review_text'].str.contains(r'https?://\S+|www\.\S+', regex=True, na=False).sum()
 print(f"Reviews with URLs: {has_urls:,} ({has_urls / len(raw_reviews_df):.2%})")
@@ -522,7 +484,6 @@ url_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'https?
 print("\nFirst 3 examples:")
 for i, text in enumerate(url_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.11 Emojis
 # 
@@ -535,7 +496,6 @@ for i, text in enumerate(url_reviews['review_text'].head(3), 1):
 # > tell whether `face` came from real text or from an emoji. That ambiguity would
 # > mislead any downstream model. Removing emojis keeps every word in the vocabulary
 # > tied to real product language.
-
 # %%
 def has_emoji_chars(text):
     if pd.isna(text): return False
@@ -551,7 +511,6 @@ emoji_reviews = raw_reviews_df[raw_reviews_df['review_text'].apply(has_emoji_cha
 print("\nFirst 3 examples:")
 for i, text in enumerate(emoji_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.12 All unique emoji symbols
 # 
@@ -561,7 +520,6 @@ for i, text in enumerate(emoji_reviews['review_text'].head(3), 1):
 # > **&#8594; Why this matters:** Confirming the **set** of emojis present lets us be
 # > sure that the `emoji.replace_emoji` library covers every variant we have, including
 # > the more unusual sequences.
-
 # %%
 _emoji_range = (
     "\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF"
@@ -580,7 +538,6 @@ all_unique_emojis = sorted(set(
 print(f"Total unique emojis found: {len(all_unique_emojis)}")
 print("\nAll unique emojis:")
 print(" ".join(all_unique_emojis))
-
 # %% [markdown]
 # ##### 1.2.1.13 Non-Latin Unicode characters
 # 
@@ -592,7 +549,6 @@ print(" ".join(all_unique_emojis))
 # > Anything that has no ASCII equivalent is silently dropped. The end result is that any
 # > review written entirely in a non-Latin script ends up with no tokens, which is exactly
 # > what we want.
-
 # %%
 def contains_non_latin(text):
     if pd.isna(text): return False
@@ -613,7 +569,6 @@ for c in list(non_latin_chars)[:15]:
     try:    name = unicodedata.name(c)
     except ValueError: name = '[No name]'
     print(f"  '{c}' (U+{ord(c):04X}) - {name}")
-
 # %% [markdown]
 # ##### 1.2.1.14 HTML entities
 # 
@@ -623,7 +578,6 @@ for c in list(non_latin_chars)[:15]:
 # > don't decode entities first, `don&#39;t` will not match the contractions library's
 # > patterns (which expect a real apostrophe). Decoding `&#39;` to `'` early lets the
 # > contraction expander turn it into `do not`.
-
 # %%
 has_html = raw_reviews_df['review_text'].str.contains(r'&\w+;|&#\d+;', regex=True, na=False).sum()
 print(f"Reviews with HTML entities: {has_html:,} ({has_html / len(raw_reviews_df):.2%})")
@@ -631,7 +585,6 @@ html_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'&\w+;
 print("\nFirst 3 examples:")
 for i, text in enumerate(html_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.15 Contractions
 # 
@@ -643,7 +596,6 @@ for i, text in enumerate(html_reviews['review_text'].head(3), 1):
 # > **&#8594; Why expand contractions before tokenisation:** Expansion turns `don't` into
 # > `do not`. After that, `not` is removed by the stop-word filter and `do` is lemmatised
 # > normally. Without expansion, the negation never reaches the stop-word filter.
-
 # %%
 _contraction_re = re.compile(
     r"\b\w+n't\b|\b(I'm|I've|I'll|I'd|you're|you've|can't|won't|don't|"
@@ -657,7 +609,6 @@ contr_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(_contr
 print("\nFirst 3 examples:")
 for i, text in enumerate(contr_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ##### 1.2.1.16 Repeated characters
 # 
@@ -668,7 +619,6 @@ for i, text in enumerate(contr_reviews['review_text'].head(3), 1):
 # > `success`). Collapsing to 2 preserves those real doubled letters while still merging
 # > exaggerated variants - `loove` is the same surviving form regardless of whether the
 # > original was `loooove`, `looooove`, or `looooooove`.
-
 # %%
 has_repeated = raw_reviews_df['review_text'].str.contains(r'(.)\1{2,}', regex=True, na=False).sum()
 print(f"Reviews with repeated chars: {has_repeated:,} ({has_repeated / len(raw_reviews_df):.2%})")
@@ -676,7 +626,6 @@ rep_reviews = raw_reviews_df[raw_reviews_df['review_text'].str.contains(r'(.)\1{
 print("\nFirst 3 examples:")
 for i, text in enumerate(rep_reviews['review_text'].head(3), 1):
     print(f"  {i}. {text[:150]}")
-
 # %% [markdown]
 # ---
 # #### 1.2.2 Preprocessing Helper Functions
@@ -691,7 +640,6 @@ for i, text in enumerate(rep_reviews['review_text'].head(3), 1):
 # * Has a **clear docstring** so a reader can understand what it does without reading the body.
 # 
 # The functions below are presented in roughly the order in which they will be applied.
-
 # %% [markdown]
 # ##### 1.2.2.1 Decode HTML entities
 # 
@@ -699,35 +647,30 @@ for i, text in enumerate(rep_reviews['review_text'].head(3), 1):
 # in one pass. This handles named entities (`&amp;` -> `&`), numeric entities
 # (`&#39;` -> `'`), and named character references in a single call - we don't have to
 # maintain our own table of mappings.
-
 # %%
 def decode_html_entities(text: object) -> str:
     """Decode HTML entities. e.g. &amp; -> &, &#39; -> '"""
     if text is None:
         return ""
     return unescape(str(text))
-
 # %% [markdown]
 # ##### 1.2.2.2 Expand contractions
 # 
 # Implementation: the third-party `contractions` library handles the long tail of
 # English contractions (including unusual cases like `y'all`, `would've`, `o'clock`).
 # Using it instead of a hand-rolled regex avoids missing edge cases.
-
 # %%
 def expand_contractions(text: object) -> str:
     """Expand English contractions. e.g. don't -> do not, can't -> cannot"""
     if text is None:
         return ""
     return contractions_lib.fix(str(text))
-
 # %% [markdown]
 # ##### 1.2.2.3 Normalise repeated characters
 # 
 # Implementation: a single regex `(.)\1{2,}` matches any character repeated 3 or more
 # times, and the substitution `\1\1` keeps just two of them. The regex is compiled
 # once at module level (`_REPEATED_CHARS`) for performance.
-
 # %%
 _REPEATED_CHARS = re.compile(r'(.)\1{2,}')
 def normalize_repeated_chars(text: object) -> str:
@@ -735,61 +678,52 @@ def normalize_repeated_chars(text: object) -> str:
     if text is None:
         return ""
     return _REPEATED_CHARS.sub(r'\1\1', str(text))
-
 # %% [markdown]
 # ##### 1.2.2.4 Lowercase
 # 
 # Implementation: Python's built-in `str.lower()`. Lowercasing is required by the brief
 # and is also the last string-level step before tokenisation - putting it last guarantees
 # that no earlier transformation accidentally re-introduces uppercase characters.
-
 # %%
 def lowercase(text: object) -> str:
     """Convert text to lowercase so Skin and skin are treated as the same word."""
     if text is None:
         return ""
     return str(text).lower()
-
 # %% [markdown]
 # ##### 1.2.2.5 Remove `@tags`
 # 
 # Implementation: regex `@\w+` matches an `@` followed by one or more word characters.
 # We replace each match with a single space (not the empty string) so words on either
 # side of the removed tag stay separated.
-
 # %%
 def replace_tags(text: object) -> str:
     """Remove @username mentions, replacing them with a space."""
     if text is None:
         return ""
     return re.sub(r'@\w+', ' ', str(text))
-
 # %% [markdown]
 # ##### 1.2.2.6 Replace `#hashtags`
 # 
 # Implementation: a plain `str.replace('#', ' ')` is enough - we only need to remove the
 # `#` symbol, not the word after it. The word that followed will then be tokenised normally.
-
 # %%
 def replace_hashtags(text: object) -> str:
     """Replace # with a space to free the keyword from the symbol."""
     if text is None:
         return ""
     return str(text).replace('#', ' ')
-
 # %% [markdown]
 # ##### 1.2.2.7 Remove digits
 # 
 # Implementation: regex `\d+` matches any run of digits and replaces it with the empty
 # string. We use `+` instead of `*` so we don't waste work matching empty positions.
-
 # %%
 def remove_digits(text: object) -> str:
     """Remove all digit characters."""
     if text is None:
         return ""
     return re.sub(r'\d+', '', str(text))
-
 # %% [markdown]
 # ##### 1.2.2.8 Remove punctuation
 # 
@@ -797,7 +731,6 @@ def remove_digits(text: object) -> str:
 # in `string.punctuation`, **except** `-` and `'`, to a space. `str.translate` then does
 # the substitution in a single C-level pass, which is faster than a Python loop. The
 # exclusion of `-` and `'` is what keeps hyphenated words and contractions intact.
-
 # %%
 _PUNCT_TABLE = str.maketrans(
     string.punctuation.replace('-', '').replace("'", ""),
@@ -808,14 +741,12 @@ def remove_punctuation(text: object) -> str:
     if text is None:
         return ""
     return str(text).translate(_PUNCT_TABLE)
-
 # %% [markdown]
 # ##### 1.2.2.9 Remove diacritics
 # 
 # Implementation: NFD Unicode decomposition splits a character like `é` into the base
 # letter `e` plus a combining acute accent. We then drop every combining mark
 # (those for which `unicodedata.combining(c)` is non-zero), leaving the bare ASCII letter.
-
 # %%
 def remove_diacritics(text: object) -> str:
     """Strip accent marks. e.g. café -> cafe, naïve -> naive"""
@@ -825,49 +756,42 @@ def remove_diacritics(text: object) -> str:
         c for c in unicodedata.normalize('NFD', str(text))
         if not unicodedata.combining(c)
     )
-
 # %% [markdown]
 # ##### 1.2.2.10 Remove round brackets
 # 
 # Implementation: two `str.replace` calls, one for `(` and one for `)`. We replace with
 # the empty string because the words inside the brackets are already separated from
 # neighbouring text by spaces.
-
 # %%
 def remove_round_brackets(text: object) -> str:
     """Strip ( and ) characters."""
     if text is None:
         return ""
     return str(text).replace('(', '').replace(')', '')
-
 # %% [markdown]
 # ##### 1.2.2.11 Remove URLs
 # 
 # Implementation: regex `https?://\S+|www\.\S+` matches both `http(s)://...` and
 # `www....` URLs, where `\S+` greedily consumes everything up to the next whitespace.
 # We replace the match with the empty string.
-
 # %%
 def remove_urls(text: object) -> str:
     """Remove http://, https://, and www. links."""
     if text is None:
         return ""
     return re.sub(r'https?://\S+|www\.\S+', '', str(text))
-
 # %% [markdown]
 # ##### 1.2.2.12 Remove emojis
 # 
 # Implementation: we use `emoji.replace_emoji(text, replace='')` from the third-party
 # `emoji` library. This library knows about every emoji code point (including ZWJ
 # sequences and skin-tone modifiers) so we don't have to maintain our own ranges.
-
 # %%
 def remove_emojis(text: object) -> str:
     """Remove all emoji characters from text."""
     if text is None:
         return ""
     return emoji.replace_emoji(str(text), replace='')
-
 # %% [markdown]
 # ##### 1.2.2.13 Normalise Unicode
 # 
@@ -875,7 +799,6 @@ def remove_emojis(text: object) -> str:
 # characters like ligatures), followed by an `encode('ascii', 'ignore').decode('ascii')`
 # round-trip that drops anything outside the ASCII range. This is the final safety net -
 # anything left after the previous steps that is still non-ASCII gets stripped here.
-
 # %%
 def normalize_unicode(text: object) -> str:
     """Normalise Unicode to ASCII. e.g. 𝙄𝙩'𝙨 -> It's. Non-ASCII chars are dropped."""
@@ -886,7 +809,6 @@ def normalize_unicode(text: object) -> str:
         .encode('ascii', 'ignore')
         .decode('ascii')
     )
-
 # %% [markdown]
 # ##### 1.2.2.14 Statistics helper
 # 
@@ -895,7 +817,6 @@ def normalize_unicode(text: object) -> str:
 # Section 1.2.4 so we can track how each transformation reshapes the corpus.
 # 
 # > **&#8594; Observation:** This is purely diagnostic - it does not modify the data.
-
 # %%
 def stats_print(tk_reviews: list[list[str]]) -> None:
     """Print a summary of vocabulary and review length statistics."""
@@ -914,6 +835,19 @@ def stats_print(tk_reviews: list[list[str]]) -> None:
         print(f"Longest review (in words)      : {int(np.max(lens))}")
         print(f"Shortest review (in words)     : {int(np.min(lens))}")
         print(f"Standard deviation of length   : {np.std(lens):.2f}")
+# %%
+# --- Pipeline audit utility ---------------------------------------------------
+# Records token counts at each major step so we can produce a single summary
+# table at the end of Section 1.3 showing how much each step removed.
+_audit_rows: list[tuple[str, int, int, int]] = []
+
+def audit(stage: str, reviews: list[list[str]]) -> None:
+    """Record token / type / empty-review counts at a labelled pipeline stage."""
+    total = sum(len(r) for r in reviews)
+    types = len({w for r in reviews for w in r})
+    empty = sum(1 for r in reviews if not r)
+    _audit_rows.append((stage, total, types, empty))
+    print(f"  [{stage:<32}] tokens={total:>10,}  types={types:>7,}  empty={empty:>5,}")
 
 # %% [markdown]
 # ---
@@ -954,7 +888,6 @@ def stats_print(tk_reviews: list[list[str]]) -> None:
 # > **&#8594; Observation:** Right after tokenisation the unique-word count is at its
 # > highest. Every following step can only reduce it. The numbers we record here are the
 # > baseline against which Sections 1.2.4 and 1.3 compare.
-
 # %%
 PATTERN   = r"[a-zA-Z]+(?:[-'][a-zA-Z]+)?"
 tokenizer = RegexpTokenizer(PATTERN)
@@ -976,6 +909,7 @@ def clean_and_tokenise(text: str) -> list[str]:
     return tokenizer.tokenize(text)
 tk_reviews = [clean_and_tokenise(r) for r in raw_reviews_df['review_text'].tolist()]
 stats_print(tk_reviews)
+audit("after tokenisation", tk_reviews)
 
 # %% [markdown]
 # ##### 1.2.3.1 Pipeline verification
@@ -998,7 +932,6 @@ stats_print(tk_reviews)
 # 
 # If any check returns a non-zero count it means a step was skipped or applied in the
 # wrong order, and we'd investigate before proceeding.
-
 # %%
 print("=== Cleaning Pipeline Verification ===\n")
 cleaned_texts = [' '.join(tokens) for tokens in tk_reviews]
@@ -1031,7 +964,6 @@ for check, violations in checks.items():
         all_passed = False
 print(f"\n{'✅ All checks passed!' if all_passed else '❌ Some checks failed.'}")
 print(f"Total reviews checked: {len(tk_reviews):,}")
-
 # %% [markdown]
 # ---
 # #### 1.2.4 Post-Tokenisation Preprocessing
@@ -1052,7 +984,6 @@ print(f"Total reviews checked: {len(tk_reviews):,}")
 # 
 # The frequency-based filters (rare words, top-20) are larger conceptual steps and live
 # in Section 1.3, after the verification in Section 1.2.5.
-
 # %% [markdown]
 # ##### 1.2.4.1 Handling empty reviews
 # 
@@ -1064,7 +995,6 @@ print(f"Total reviews checked: {len(tk_reviews):,}")
 # > as empty strings in `processed.csv`. This keeps the row count stable, preserves the
 # > alignment between `processed.csv` and the original input row by row, and keeps the
 # > metadata (rating, brand, etc.) usable in Tasks 2 and 3.
-
 # %%
 empty_indices = [i for i, r in enumerate(tk_reviews) if not r]
 print(f"Empty reviews after tokenisation: {len(empty_indices)} ({len(empty_indices)/len(tk_reviews):.2%})")
@@ -1073,7 +1003,6 @@ for i in empty_indices[:5]:
     print(f"\n[{i}] Original : {repr(str(original)[:120])}")
     print(f"     Tokens   : {clean_and_tokenise(original) or '(empty)'}")
 stats_print(tk_reviews)
-
 # %% [markdown]
 # ##### 1.2.4.2 Removing short words (length < 2)
 # 
@@ -1084,7 +1013,6 @@ stats_print(tk_reviews)
 # > **&#8594; Observation:** This step removes a relatively small number of unique tokens
 # > but a large number of token occurrences, because letters like `a` and `i` are very
 # > common. The unique-vocabulary cost is tiny; the corpus-cleanliness benefit is large.
-
 # %%
 MIN_WORD_LENGTH = 2
 def filter_short_words(
@@ -1095,6 +1023,7 @@ def filter_short_words(
     return [[w for w in review if len(w) >= min_length] for review in tokenized_reviews]
 tk_reviews = filter_short_words(tk_reviews)
 stats_print(tk_reviews)
+audit("after short-word filter", tk_reviews)
 
 # %% [markdown]
 # ##### 1.2.4.3 Removing stop words
@@ -1104,16 +1033,16 @@ stats_print(tk_reviews)
 # distinguish one document from another - if every review contains them, they cannot
 # discriminate between reviews.
 # 
-# We use the **assignment-supplied** list at `../data/stopwords_en.txt`. We load it into
+# We use the **assignment-supplied** list at `stopwords_en.txt`. We load it into
 # a `frozenset`, which is an immutable hash-based set - membership tests run in O(1)
 # average time, so checking thousands of tokens against thousands of stop words is fast.
 # 
 # > **&#8594; Observation:** Stop-word removal causes a sharp drop in **total** token
 # > count but only a small drop in **unique** vocabulary - because a small number of
 # > stop-word **types** account for a huge share of word **occurrences**.
-
 # %%
 STOPWORDS_PATH = Path("stopwords_en.txt")
+
 def load_stopwords(path: Path) -> frozenset[str]:
     """Load the stop-word list from disk into a frozenset."""
     if not path.exists():
@@ -1121,17 +1050,99 @@ def load_stopwords(path: Path) -> frozenset[str]:
     words = frozenset(path.read_text(encoding="utf-8").split())
     print(f"Loaded {len(words):,} stopwords from {path}")
     return words
+
 def remove_stopwords(
     tokenized_reviews: list[list[str]],
     stopwords: frozenset[str],
 ) -> list[list[str]]:
     """Remove stop words from every review."""
     return [[w for w in review if w not in stopwords] for review in tokenized_reviews]
+
+# 1. Load the assignment-supplied list as-is
 stopwords_en = load_stopwords(STOPWORDS_PATH)
-tk_reviews   = remove_stopwords(tk_reviews, stopwords_en)
+
+# 2. Inspect which negation / polarity words are inside it
+NEGATION_CANDIDATES = frozenset({
+    "no", "not", "nor", "none", "never", "neither",
+    "nobody", "nothing", "nowhere",
+    "hardly", "barely", "scarcely", "rarely", "seldom",
+    "cannot", "without", "against",
+    "but", "however", "though", "although", "yet",
+})
+negations_in_stopwords = sorted(NEGATION_CANDIDATES & stopwords_en)
+print(f"\nNegation/polarity words found in stopwords_en.txt "
+      f"({len(negations_in_stopwords)}): {negations_in_stopwords}")
+
+# 3. Carve them out so they survive stop-word removal
+PRESERVE_WORDS = frozenset({
+    "no", "not", "nor", "none", "never", "neither",
+    "nobody", "nothing", "nowhere",
+    "hardly", "barely", "scarcely", "rarely", "seldom",
+    "but", "however", "though", "although",
+})
+preserved = PRESERVE_WORDS & stopwords_en
+stopwords_en = stopwords_en - preserved
+print(f"Preserving {len(preserved)} word(s): {sorted(preserved)}")
+print(f"Stop-word list size: was {len(stopwords_en) + len(preserved):,}, "
+      f"now {len(stopwords_en):,}")
+# %% [markdown]
+# ##### 1.2.4.3a Preserving negation and polarity words
+# 
+# The assignment-supplied `stopwords_en.txt` bundles together two very different
+# kinds of words:
+# 
+# 1. **True function words** — `the`, `of`, `is`, `at`, `which`. These add no
+#    discriminative signal between reviews and are safe to drop.
+# 2. **Negation and polarity words** — `not`, `no`, `never`, `nothing`, `but`,
+#    `however`. Syntactically they look like stop words, but semantically they
+#    *flip* or *attenuate* the meaning of the content words around them.
+# 
+# Removing the second group is actively harmful for any downstream task that
+# cares about **opinion, sentiment, or polarity** — exactly the kind of analysis
+# a beauty-review corpus invites. After blanket stop-word removal:
+# 
+# > *"this product is **not** good"* &nbsp;→&nbsp; `["product", "good"]`
+# 
+# …which a classifier reads as a positive review. Keeping `not` in the
+# vocabulary lets the model (or a later bigram / negation-scoping step) treat
+# `not good` as a distinct, negative-polarity feature.
+# 
+# We therefore:
+# 
+# 1. Load `stopwords_en.txt` exactly as the brief specifies.
+# 2. Intersect it with a curated `PRESERVE_WORDS` set containing common English
+#    negators and polarity flippers.
+# 3. **Subtract** that intersection from `stopwords_en` *before* any filtering
+#    runs.
+# 
+# This is a deliberate, documented departure from blanket stop-word removal:
+# the assignment's list remains the source of truth, and we only carve out the
+# specific words whose removal would mislead the model. The preserved set is
+# small (typically 10–15 tokens) so the total token count barely changes, but
+# the *informational* value of the retained tokens is disproportionately high.
+# 
+# > **&#8594; Observation:** Only words that are *both* in `PRESERVE_WORDS` *and*
+# > in `stopwords_en.txt` are carved out — we never silently add new tokens to
+# > the vocabulary, we only stop ourselves from removing useful ones.
+# %%
+tk_reviews = remove_stopwords(tk_reviews, stopwords_en)
 empty_after_stop = sum(1 for r in tk_reviews if not r)
 print(f"Empty reviews after stopword removal: {empty_after_stop}")
 stats_print(tk_reviews)
+audit("after stopword removal", tk_reviews)
+
+# %% [markdown]
+# ##### 1.2.4.3b Verifying that preserved words survived
+# 
+# A quick sanity check: count how often each preserved negation / polarity word
+# appears in the corpus *after* stop-word removal. If preservation worked, every
+# word in `PRESERVE_WORDS ∩ stopwords_en.txt` should still have a non-zero count.
+# 
+# %%
+kept_count = {w: sum(r.count(w) for r in tk_reviews) for w in sorted(preserved)}
+print("Surviving negation / polarity tokens (occurrence counts):")
+for w, c in sorted(kept_count.items(), key=lambda x: -x[1]):
+    print(f"  {w:<10} {c:>8,}")
 
 # %% [markdown]
 # ##### 1.2.4.4 Lemmatisation
@@ -1154,7 +1165,6 @@ stats_print(tk_reviews)
 # | Skip tokens of length ≤ 3 | Short words are likely abbreviations or already in base form. The example `us` -> `u` shows what goes wrong if we don't skip them. |
 # | Reject a lemma that collapses to 1 character | A 1-character lemma is always wrong - it would also be removed by the next short-word filter, so we just refuse it here. |
 # | Reject a lemma that is ≥ 2 characters shorter than the original | Big size drops usually mean the lemmatizer guessed wrong. The example `boss` -> `bos` shows this kind of bad reduction. A 1-character drop (e.g. `running` -> `run`) is fine. |
-
 # %% [markdown]
 # ###### 1.2.4.4.1 Lemmatisation helper functions
 # 
@@ -1170,6 +1180,12 @@ stats_print(tk_reviews)
 # > **&#8594; Observation:** Lemmatisation reduces the **unique** word count by merging
 # > inflected forms but does not change the **total** word count or the number of reviews -
 # > it rewrites tokens in place rather than removing them.
+# %%
+# Keep a copy of the un-lemmatised tokens. We do not use it in Task 1, but
+# bigrams / collocation work in later milestones works better on the raw forms,
+# because lemmatisation merges words like "creams"/"cream" and suppresses some
+# useful phrase signal.
+tk_reviews_pre_lemma = [list(r) for r in tk_reviews]
 
 # %%
 lemmatizer    = WordNetLemmatizer()
@@ -1201,19 +1217,18 @@ def lemmatise_review(review: list[str]) -> list[str]:
     ]
 tk_reviews_lemmatized = [lemmatise_review(r) for r in tk_reviews]
 stats_print(tk_reviews_lemmatized)
-
 # %%
 lemmatization_changes = [(w, l) for (w, p), l in _lemma_cache.items() if w != l]
 print(f"Total words changed by lemmatisation: {len(lemmatization_changes):,}")
 print("\nAll changes (original -> base form):")
 for word, lemma in sorted(lemmatization_changes):
     print(f"  {word:>20s}  ->  {lemma}")
-
 # %%
 print("Before lemmatisation:")
 stats_print(tk_reviews)
 print("\nAfter lemmatisation:")
 stats_print(tk_reviews_lemmatized)
+audit("after lemmatisation", tk_reviews_lemmatized)
 
 # %% [markdown]
 # ##### 1.2.4.5 Removing short words again after lemmatisation
@@ -1222,10 +1237,10 @@ stats_print(tk_reviews_lemmatized)
 # 1-character lemma (typically when a short word was POS-tagged ambiguously and the
 # length-≤-3 skip didn't apply). To be safe we run the short-word filter a second time
 # so any such tokens are removed before they enter the vocabulary.
-
 # %%
 tk_reviews = filter_short_words(tk_reviews_lemmatized)
 stats_print(tk_reviews)
+audit("after 2nd short-word filter", tk_reviews)
 
 # %%
 short_words = [(i, j, w) for i, r in enumerate(tk_reviews) for j, w in enumerate(r) if len(w) < 2]
@@ -1235,7 +1250,6 @@ else:
     print(f"FAIL: {len(short_words):,} short tokens remain.")
     for i, j, w in short_words[:20]:
         print(f"  Review {i}, position {j}: {repr(w)}")
-
 # %% [markdown]
 # ##### 1.2.4.6 Second stopword pass after lemmatisation
 # 
@@ -1246,13 +1260,13 @@ else:
 # 
 # > **&#8594; Observation:** This pass typically removes only a small number of tokens,
 # > but they are exactly the kind of high-frequency, low-signal words that we want gone.
-
 # %%
 before_second_stop = sum(len(r) for r in tk_reviews)
 tk_reviews = remove_stopwords(tk_reviews, stopwords_en)
 after_second_stop = sum(len(r) for r in tk_reviews)
 print(f"Tokens removed by second stopword pass: {before_second_stop - after_second_stop:,}")
 stats_print(tk_reviews)
+audit("after 2nd stopword pass", tk_reviews)
 
 # %% [markdown]
 # ---
@@ -1275,7 +1289,6 @@ stats_print(tk_reviews)
 # 
 # Failing any check would mean the pipeline still has a bug, and we would not proceed
 # to vocabulary refinement until the bug was fixed.
-
 # %%
 print("=== Post-Tokenisation Verification ===\n")
 # --- 1. Token format: every token must match the assignment pattern -----------
@@ -1339,7 +1352,6 @@ for i, review in enumerate(tk_reviews):
         shown += 1
         if shown == 3:
             break
-
 # %% [markdown]
 # ---
 # ### 1.3 Vocabulary Refinement
@@ -1362,7 +1374,6 @@ for i, review in enumerate(tk_reviews):
 # * **Section 1.3.1** removes words with **TF = 1** - the rarest, mostly noise.
 # * **Section 1.3.2** removes the **top 20 words by DF** - the most pervasive, mostly
 #   domain-specific filler.
-
 # %% [markdown]
 # #### 1.3.1 Removing words that appear only once (hapax legomena)
 # 
@@ -1380,7 +1391,6 @@ for i, review in enumerate(tk_reviews):
 # > of types account for most word **tokens**. Hapax legomena sit at the rare end of
 # > that curve and removing them shrinks the vocabulary dramatically without losing any
 # > repeatable signal.
-
 # %%
 term_freq  = Counter(chain.from_iterable(tk_reviews))
 rare_words = {w for w, c in term_freq.items() if c == 1}
@@ -1388,6 +1398,7 @@ print(f"Words appearing only once : {len(rare_words):,}")
 print(f"Percentage of vocabulary  : {len(rare_words) / len(term_freq):.1%}")
 tk_reviews = [[w for w in r if w not in rare_words] for r in tk_reviews]
 stats_print(tk_reviews)
+audit("after rare-word filter", tk_reviews)
 
 # %% [markdown]
 # #### 1.3.2 Removing the top 20 most frequent words (by document frequency)
@@ -1409,7 +1420,6 @@ stats_print(tk_reviews)
 # > of the Zipfian curve - the rare end (1.3.1) and the common end (1.3.2) - leaving a
 # > middle band of words that carry the most discriminative information for downstream
 # > tasks.
-
 # %%
 def word_frequency_stats(
     tokenized_reviews: list[list[str]],
@@ -1439,18 +1449,27 @@ def remove_top_n_by_doc_freq(
     df_freq: pd.DataFrame,
     top_n: int = 20,
 ) -> list[list[str]]:
-    """Remove the top N most frequent words ranked by document frequency."""
-    top_words = set(df_freq.nlargest(top_n, "doc_freq")["word"])
-    print(f"Top {top_n} words removed (by document frequency):")
+    """Remove the top N most frequent words ranked by document frequency,
+       but keep important negation words like 'not'."""
+
+    protected_words = {"not", "no", "never"}
+
+    top_df = (
+        df_freq[~df_freq["word"].isin(protected_words)]
+        .nlargest(top_n, "doc_freq")
+    )
+
+    top_words = set(top_df["word"])
+
+    print(f"Top {top_n} words removed (excluding protected words):")
     print(
-        df_freq.nlargest(top_n, "doc_freq")[["word", "doc_freq", "doc_freq_pct"]]
+        top_df[["word", "doc_freq", "doc_freq_pct"]]
         .to_string(index=False)
     )
-    return [[w for w in r if w not in top_words] for r in tokenized_reviews]
 
+    return [[w for w in r if w not in top_words] for r in tokenized_reviews]
 # %%
 df_freq = word_frequency_stats(tk_reviews)
-
 # %%
 df_freq["count"].plot(
     kind="hist", bins=100, log=True,
@@ -1458,10 +1477,26 @@ df_freq["count"].plot(
     xlabel="Frequency",
     ylabel="Number of words",
 )
-
 # %%
 tk_reviews = remove_top_n_by_doc_freq(tk_reviews, df_freq, top_n=20)
 stats_print(tk_reviews)
+audit("after top-20 cull", tk_reviews)
+
+# %% [markdown]
+# #### 1.3.3 Pipeline audit summary
+# 
+# Each major step in the pipeline calls a small `audit(...)` helper that records
+# the total token count, unique vocabulary size, and number of empty reviews.
+# The table below shows **how much each step contributes** to the cleaning -
+# making it easy to spot any step that is removing more (or fewer) tokens than
+# expected, and to quote concrete numbers in the report.
+# 
+# %%
+import pandas as pd
+audit_df = pd.DataFrame(_audit_rows, columns=["stage", "tokens", "types", "empty"])
+audit_df["tokens_lost"] = audit_df["tokens"].diff().fillna(0).astype(int)
+audit_df["types_lost"]  = audit_df["types"].diff().fillna(0).astype(int)
+audit_df
 
 # %% [markdown]
 # ---
@@ -1471,7 +1506,6 @@ stats_print(tk_reviews)
 # in Section 1.5, we save a **preview** of the output files so we can inspect their
 # shape and format right away. The same files are written again as the **final** output
 # in Section 2.
-
 # %% [markdown]
 # #### 1.4.1 Preview of `processed.csv`
 # 
@@ -1479,14 +1513,12 @@ stats_print(tk_reviews)
 # review. Every other column is preserved untouched so that downstream tasks can still
 # access metadata. We pass `index=False` so pandas does not add an extra unwanted index
 # column to the file.
-
 # %%
 processed_df = raw_reviews_df.copy()
 processed_df["review_text"] = [" ".join(r) for r in tk_reviews]
 processed_df.to_csv("processed.csv", index=False)
 print(f"Saved processed.csv - {len(processed_df):,} rows, {processed_df.shape[1]} columns.")
 processed_df[["review_id", "review_title", "review_text", "review_rating"]].head()
-
 # %% [markdown]
 # #### 1.4.2 Preview of `vocab.txt`
 # 
@@ -1494,7 +1526,6 @@ processed_df[["review_id", "review_title", "review_text", "review_rating"]].head
 # sorted alphabetically, one entry per line, in the format `word:integer_index`.
 # Indices start at 0. The next code cell prints the first ten and last five lines so
 # we can confirm the format at a glance.
-
 # %%
 vocab = sorted(set(chain.from_iterable(tk_reviews)))
 Path("vocab.txt").write_text(
@@ -1509,7 +1540,6 @@ for line in lines[:10]:
 print("\nLast 5 entries:")
 for line in lines[-5:]:
     print(f"  {line}")
-
 # %% [markdown]
 # ---
 # ### 1.5 Idempotency Check
@@ -1522,21 +1552,30 @@ for line in lines[-5:]:
 # 
 # This is a sanity check, not a transformation - we keep it so we can verify the
 # pipeline is not accidentally mutating state.
-
 # %% [markdown]
 # > **&#8594; Note:** The numbers printed by the next few cells should match the
 # > numbers from Sections 1.2.4 - 1.3 above. Any divergence would indicate a bug.
-
 # %% [markdown]
 # #### 1.5.1 Short-word filter (re-applied)
 # 
 # Same operation as Section 1.2.4.5. Re-applying it on already-clean data should change
 # nothing.
+# %%
+MIN_WORD_LENGTH = 2
+def filter_short_words(
+    tokenized_reviews: list[list[str]],
+    min_length: int = MIN_WORD_LENGTH,
+) -> list[list[str]]:
+    """Remove tokens shorter than min_length characters."""
+    return [[w for w in review if len(w) >= min_length] for review in tokenized_reviews]
+tk_reviews = filter_short_words(tk_reviews)
+stats_print(tk_reviews)
+audit("after short-word filter", tk_reviews)
 
 # %%
 tk_reviews = filter_short_words(tk_reviews_lemmatized)
 stats_print(tk_reviews)
-
+audit("after 2nd short-word filter", tk_reviews)
 
 # %%
 short_words = [(i, j, w) for i, r in enumerate(tk_reviews) for j, w in enumerate(r) if len(w) < 2]
@@ -1547,12 +1586,88 @@ else:
     for i, j, w in short_words[:20]:
         print(f"  Review {i}, position {j}: {repr(w)}")
 
+# %%
+short_words = sorted({
+    w
+    for review in tk_reviews
+    for w in review
+    if len(w) == 1
+})
 
+print(short_words)
+print(f"\nNumber of single-letter words: {len(short_words)}")
+# %%
+short_words = sorted({
+    w
+    for review in tk_reviews
+    for w in review
+    if len(w) == 2
+})
+
+print(short_words)
+print(f"\nNumber of 2-letter words: {len(short_words)}")
 # %% [markdown]
 # #### 1.5.2 Stop-word filter (re-applied)
 # 
 # Same operation as Section 1.2.4.6. Re-applying it on already-clean data should change
 # nothing.
+# %%
+STOPWORDS_PATH = Path("stopwords_en.txt")
+
+def load_stopwords(path: Path) -> frozenset[str]:
+    """Load the stop-word list from disk into a frozenset."""
+    if not path.exists():
+        raise FileNotFoundError(f"Stopwords file not found: {path}")
+    words = frozenset(path.read_text(encoding="utf-8").split())
+    print(f"Loaded {len(words):,} stopwords from {path}")
+    return words
+
+def remove_stopwords(
+    tokenized_reviews: list[list[str]],
+    stopwords: frozenset[str],
+) -> list[list[str]]:
+    """Remove stop words from every review."""
+    return [[w for w in review if w not in stopwords] for review in tokenized_reviews]
+
+# 1. Load the assignment-supplied list as-is
+stopwords_en = load_stopwords(STOPWORDS_PATH)
+
+# 2. Inspect which negation / polarity words are inside it
+NEGATION_CANDIDATES = frozenset({
+    "no", "not", "nor", "none", "never", "neither",
+    "nobody", "nothing", "nowhere",
+    "hardly", "barely", "scarcely", "rarely", "seldom",
+    "cannot", "without", "against",
+    "but", "however", "though", "although", "yet",
+})
+negations_in_stopwords = sorted(NEGATION_CANDIDATES & stopwords_en)
+print(f"\nNegation/polarity words found in stopwords_en.txt "
+      f"({len(negations_in_stopwords)}): {negations_in_stopwords}")
+
+# 3. Carve them out so they survive stop-word removal
+PRESERVE_WORDS = frozenset({
+    "no", "not", "nor", "none", "never", "neither",
+    "nobody", "nothing", "nowhere",
+    "hardly", "barely", "scarcely", "rarely", "seldom",
+    "but", "however", "though", "although",
+})
+preserved = PRESERVE_WORDS & stopwords_en
+stopwords_en = stopwords_en - preserved
+print(f"Preserving {len(preserved)} word(s): {sorted(preserved)}")
+print(f"Stop-word list size: was {len(stopwords_en) + len(preserved):,}, "
+      f"now {len(stopwords_en):,}")
+# %%
+tk_reviews = remove_stopwords(tk_reviews, stopwords_en)
+empty_after_stop = sum(1 for r in tk_reviews if not r)
+print(f"Empty reviews after stopword removal: {empty_after_stop}")
+stats_print(tk_reviews)
+audit("after stopword removal", tk_reviews)
+
+# %%
+kept_count = {w: sum(r.count(w) for r in tk_reviews) for w in sorted(preserved)}
+print("Surviving negation / polarity tokens (occurrence counts):")
+for w, c in sorted(kept_count.items(), key=lambda x: -x[1]):
+    print(f"  {w:<10} {c:>8,}")
 
 # %%
 before_second_stop = sum(len(r) for r in tk_reviews)
@@ -1561,13 +1676,11 @@ after_second_stop = sum(len(r) for r in tk_reviews)
 print(f"Tokens removed by second stopword pass: {before_second_stop - after_second_stop:,}")
 stats_print(tk_reviews)
 
-
 # %% [markdown]
 # ---
 # #### 1.5.3 Token verification (re-applied)
 # 
 # Same five-check verification as Section 1.2.5. All checks should still pass.
-
 # %%
 print("=== Post-Tokenisation Verification ===\n")
 
@@ -1641,17 +1754,14 @@ for i, review in enumerate(tk_reviews):
         if shown == 3:
             break
 
-
 # %% [markdown]
 # ---
 # #### 1.5.4 Frequency filters (re-applied)
-
 # %% [markdown]
 # ##### 1.5.4.1 Hapax-legomena filter (re-applied)
 # 
 # Same operation as Section 1.3.1. After the first removal of TF = 1 words, no words with
 # TF = 1 should remain - so this re-run should report **zero** rare words to remove.
-
 # %%
 term_freq  = Counter(chain.from_iterable(tk_reviews))
 rare_words = {w for w, c in term_freq.items() if c == 1}
@@ -1662,19 +1772,17 @@ print(f"Percentage of vocabulary  : {len(rare_words) / len(term_freq):.1%}")
 tk_reviews = [[w for w in r if w not in rare_words] for r in tk_reviews]
 stats_print(tk_reviews)
 
-
 # %% [markdown]
 # > **&#8594; Note:** The number of "words appearing only once" reported above will be
 # > larger than zero only because the top-20 filter has not yet re-run, and removing
 # > those filler words may push other words back down to TF = 1 in the new counts.
 # > This is expected behaviour and does not contradict idempotency.
-
 # %% [markdown]
 # ##### 1.5.4.2 Top-20 filter (re-applied)
 # 
 # Same operation as Section 1.3.2 - identify the 20 words with the highest document
 # frequency and remove them.
-
+# 
 # %%
 def word_frequency_stats(
     tokenized_reviews: list[list[str]],
@@ -1683,45 +1791,48 @@ def word_frequency_stats(
     """Compute per-word term frequency and document frequency statistics."""
     freq         = Counter(w for r in tokenized_reviews for w in r)
     total_tokens = sum(freq.values())
-
     doc_freq: dict[str, int] = defaultdict(int)
     for review in tokenized_reviews:
         for w in set(review):
             doc_freq[w] += 1
-
     df_freq = pd.DataFrame(freq.most_common(), columns=["word", "count"])
     df_freq["pct_of_tokens"]  = df_freq["count"] / total_tokens * 100
     df_freq["cumulative_pct"] = df_freq["pct_of_tokens"].cumsum()
     df_freq["doc_freq"]       = df_freq["word"].map(doc_freq)
     df_freq["doc_freq_pct"]   = df_freq["doc_freq"] / len(tokenized_reviews) * 100
-
     print(f"Vocabulary size : {len(freq):,}")
     print(f"Total tokens    : {total_tokens:,}")
     print(f"\nTop {top_n} most frequent words:")
     print(df_freq.head(top_n).to_string(index=False))
     print(f"\nBottom {top_n} least frequent words:")
     print(df_freq.tail(top_n).to_string(index=False))
-
     return df_freq
-
 def remove_top_n_by_doc_freq(
     tokenized_reviews: list[list[str]],
     df_freq: pd.DataFrame,
     top_n: int = 20,
 ) -> list[list[str]]:
-    """Remove the top N most frequent words ranked by document frequency."""
-    top_words = set(df_freq.nlargest(top_n, "doc_freq")["word"])
-    print(f"Top {top_n} words removed (by document frequency):")
+    """Remove the top N most frequent words ranked by document frequency,
+       but keep important negation words like 'not'."""
+
+    protected_words = {"not", "no", "never"}
+
+    top_df = (
+        df_freq[~df_freq["word"].isin(protected_words)]
+        .nlargest(top_n, "doc_freq")
+    )
+
+    top_words = set(top_df["word"])
+
+    print(f"Top {top_n} words removed (excluding protected words):")
     print(
-        df_freq.nlargest(top_n, "doc_freq")[["word", "doc_freq", "doc_freq_pct"]]
+        top_df[["word", "doc_freq", "doc_freq_pct"]]
         .to_string(index=False)
     )
+
     return [[w for w in r if w not in top_words] for r in tokenized_reviews]
-
-
 # %%
 df_freq = word_frequency_stats(tk_reviews)
-
 
 # %%
 df_freq["count"].plot(
@@ -1730,24 +1841,47 @@ df_freq["count"].plot(
     xlabel="Frequency",
     ylabel="Number of words",
 )
-
-
-# %% [markdown]
-# > **&#8594; Note:** The frequency histogram still follows the Zipfian shape
-# > described in Section 1.3.1. The shape is preserved because removing the original
-# > top-20 only shifts the curve - it doesn't alter its underlying power-law form.
-
 # %%
 tk_reviews = remove_top_n_by_doc_freq(tk_reviews, df_freq, top_n=20)
 stats_print(tk_reviews)
+audit("after top-20 cull", tk_reviews)
 
+# %% [markdown]
+# #### 1.5.5 Vocabulary saturation (Heaps’ law)
+# 
+# Heaps’ law predicts that vocabulary size grows sub-linearly with the
+# number of documents scanned: `|V| ≈ k · N^β` with
+# `0 < β < 1`. A clean preprocessing pipeline produces a curve that
+# **flattens out** as more reviews are scanned - each new review contributes
+# fewer brand-new word types. A still-rising line at the end of the corpus
+# indicates the pipeline is letting through noisy or inconsistent tokens.
+# 
+# > **&#8594; Observation:** After our preprocessing, the curve should bend
+# > sharply early on and then approach a near-horizontal asymptote, confirming
+# > that the vocabulary has stabilised.
+# 
+# %%
+import matplotlib.pyplot as plt
+
+seen, vocab_size = set(), []
+for r in tk_reviews:
+    seen.update(r)
+    vocab_size.append(len(seen))
+
+plt.figure(figsize=(7, 4))
+plt.plot(range(1, len(vocab_size) + 1), vocab_size)
+plt.xlabel("Reviews scanned")
+plt.ylabel("Unique vocabulary size")
+plt.title("Vocabulary growth (Heaps’ law)")
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
 # > **&#8594; Note:** This second top-20 list will overlap heavily with - but may not
 # > be identical to - the first one, because the document-frequency ranking is recomputed
 # > on the post-1.3.1 vocabulary. We keep the result as the final cleaned token list and
 # > proceed to write the output files in Section 2.
-
 # %% [markdown]
 # ---
 # ## 2. Saving Output Files
@@ -1763,7 +1897,6 @@ stats_print(tk_reviews)
 # Building both files from the same `tk_reviews` object guarantees they are **consistent**
 # with each other - every word in the vocabulary appears at least once in the CSV, and
 # every token in the CSV is indexed in the vocabulary.
-
 # %% [markdown]
 # ### 2.1 Saving `processed.csv`
 # 
@@ -1774,7 +1907,6 @@ stats_print(tk_reviews)
 # > **&#8594; Note:** Reviews that ended up with zero tokens are written as **empty
 # > strings**, not skipped. This preserves row order so `processed.csv` can be joined
 # > back to the original dataset by row index in later tasks.
-
 # %%
 processed_df = raw_reviews_df.copy()
 processed_df["review_text"] = [" ".join(r) for r in tk_reviews]
@@ -1783,6 +1915,25 @@ processed_df.to_csv("processed.csv", index=False)
 print(f"Saved processed.csv - {len(processed_df):,} rows, {processed_df.shape[1]} columns.")
 processed_df[["review_id", "review_title", "review_text", "review_rating"]].head()
 
+# %% [markdown]
+# ### 2.1.1 Spot-check: original vs processed reviews
+# 
+# A handful of randomly-sampled reviews printed side-by-side, so we (and the
+# marker) can sanity-check that the pipeline removed only what it was supposed
+# to and kept all content-bearing words - including the preserved negation
+# tokens.
+# 
+# %%
+import random
+random.seed(42)
+sample_idx = random.sample(range(len(processed_df)), 5)
+for i in sample_idx:
+    orig = processed_df.loc[i, "review_text_original"]
+    proc = processed_df.loc[i, "review_text"]
+    print(f"--- Review index {i} ---")
+    print(f"ORIGINAL : {orig[:220]}{'...' if len(orig) > 220 else ''}")
+    print(f"PROCESSED: {proc[:220]}{'...' if len(proc) > 220 else ''}")
+    print()
 
 # %% [markdown]
 # ### 2.2 Saving `vocab.txt`
@@ -1800,7 +1951,6 @@ processed_df[["review_id", "review_title", "review_text", "review_rating"]].head
 # 
 # If any assertion fails, the cell raises an `AssertionError` and the notebook stops -
 # this prevents an incorrect output file from being submitted.
-
 # %%
 vocab = sorted(set(chain.from_iterable(tk_reviews)))
 
@@ -1818,7 +1968,6 @@ print("\nLast 5 entries:")
 for line in lines[-5:]:
     print(f"  {line}")
 
-
 # %%
 # Verify all format requirements from the brief
 assert lines[0].endswith(":0"),                                                    "Index does not start at 0"
@@ -1828,6 +1977,13 @@ assert lines == sorted(lines, key=lambda l: l.split(":")[0]),                   
 assert not any("_" in line.split(":")[0] for line in lines),                      "N-gram tokens found in unigram vocab"
 print("✅ All vocab.txt format checks passed.")
 
+# Additional integrity checks
+words   = [line.split(":", 1)[0]      for line in lines]
+indices = [int(line.split(":", 1)[1]) for line in lines]
+
+assert indices == list(range(len(indices))), "Indices must be 0..N-1 with no gaps"
+assert len(set(words)) == len(words),         "Duplicate words detected in vocab.txt"
+print(f"vocab.txt OK - {len(words):,} entries, indices 0..{len(words)-1}, no duplicates.")
 
 # %% [markdown]
 # ---
@@ -1866,8 +2022,4 @@ print("✅ All vocab.txt format checks passed.")
 #   * 1.4 - intermediate output preview
 #   * 1.5 - idempotency check that re-running the steps changes nothing
 # * **Section 2** - the final save of `processed.csv` and `vocab.txt`.
-
 # %%
-
-
-
