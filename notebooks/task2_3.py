@@ -40,7 +40,7 @@
 # ## Importing Libraries
 # 
 # %%
-!pip install xgboost lightgbm gensim nltk emoji contractions wordsegment
+!pip install lightgbm gensim nltk emoji contractions wordsegment
 # %%
 import nltk
 
@@ -94,7 +94,7 @@ from sklearn.naive_bayes import GaussianNB, MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import LinearSVC
-from xgboost import XGBClassifier
+
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 
@@ -514,10 +514,9 @@ for _test_idx in range(3):
     validator_embedding(_test_idx, reviews, tokenised_for_display, unweighted_vectors, weighted_vectors)
 
 # %% [markdown]
-# ## Task 3: Beauty Review Classification *(9 marks)*
-# #
-# Using the three representations generated above, we train and evaluate a Logistic
-# Regression classifier to predict `is_a_buyer` — whether a reviewer purchased the product.
+# # Task 3: Beauty Review Classification *(9 marks)*
+# 
+# This task focuses on predicting whether a reviewer purchased the product, represented by the target variable `is_a_buyer`. It is divided into two main parts: first, comparing different classifiers across the three document representations generated in Task 2, and second, investigating whether adding extra information beyond the review text improves classification performance. 
 # 
 # %% [markdown]
 # ### 3.1 Shared I/O Utilities
@@ -599,7 +598,8 @@ def align_to_dataframe(X, doc_indices: np.ndarray, n_rows: int):
 
 # %% [markdown]
 # ### 3.2 Load Feature Matrices & Attach Labels
-# #
+# 
+# This section loads the three feature matrices generated in Task 2: Bag-of-Words, Unweighted FastText, and TF-IDF Weighted FastText. The target label `is_a_buyer` is then attached to each representation using the original review indices, so that each feature matrix can be used for classification in Task 3.
 # %%
 X_count,      idx_count      = load_count_vectors(COUNT_VEC_PATH)
 X_unweighted, idx_unweighted = load_dense_vectors(UNWEIGHTED_PATH)
@@ -633,6 +633,8 @@ print(f"df_weighted   : {df_weighted.shape}")
 # %% [markdown]
 # ### 3.3 Class Distribution
 # #
+# 
+# Before training the models, the class distribution of the target variable `is_a_buyer` was examined to check whether the dataset was balanced. Since the dataset is imbalanced, an imbalance-handling strategy was needed to prevent the models from being biased toward the majority class. In this work, `class_weight='balanced'` was preferred over SMOTE because it keeps the original data unchanged and simply gives a higher penalty to mistakes on the minority class. This is more suitable for text-based features such as Bag-of-Words and FastText embeddings, where creating synthetic samples with SMOTE may produce artificial vectors that do not clearly represent real reviews.
 # %%
 _class_counts = df_task2["is_a_buyer"].value_counts().sort_index()
 _cls_labels   = ["Not a Buyer (0)", "Buyer (1)"]
@@ -658,13 +660,11 @@ print(f"Imbalance ratio : {_class_counts.max() / _class_counts.min():.2f}x  "
 # %% [markdown]
 # The target variable is_a_buyer is imbalanced, with Buyer (1) representing 78.7% of the dataset and Not a Buyer (0) representing only 21.3%. Since the buyer class is approximately 3.7 times larger than the non-buyer class, accuracy alone may give a misleading view of model performance. A model could achieve high accuracy by mainly predicting the majority class while failing to identify non-buyers. Therefore, Macro F1 was selected as the main evaluation metric because it gives equal importance to both classes. Logistic Regression was also trained using class_weight='balanced' so that mistakes on the minority Not a Buyer class receive a larger penalty, reducing majority-class bias and improving balanced classification performance.
 # %% [markdown]
-# ### 3.4 Q1 — Language Model Comparisons *(3 marks)*
-# #
-# The original (imbalanced) dataset is used as-is.  `class_weight='balanced'`
-# instructs the classifier to inversely weight each class by its frequency,
-# penalising errors on the minority class (Not Buyer) more heavily without
-# discarding any majority-class samples.
-# #
+# ### 3.4 Q1 - Language Model Comparisons *(3 marks)*
+# 
+# In Q1, the goal is to compare how well the three document representations from Task 2 perform for the classification task. To make the comparison fair, the same evaluation function is used for each representation with 5-fold stratified cross-validation. The models are evaluated using accuracy, macro precision, macro recall, and Macro-F1, with Macro-F1 used as the main metric because the target variable `is_a_buyer` is imbalanced.
+# 
+# The original imbalanced dataset is kept unchanged, but `class_weight='balanced'` is used for Logistic Regression so that errors on the minority class receive a higher penalty. This helps reduce majority-class bias without creating synthetic samples or discarding data.
 # %%
 def evaluate_representation(X, y, representation_name: str,
                                           classifier_name: str, classifier) -> dict:
@@ -760,7 +760,7 @@ display(_df_q1)
 # #
 # `MultinomialNB` is used for BoW (non-negative count features).
 # `GaussianNB` is used for FastText embeddings (continuous, may be negative).
-# Class imbalance is addressed via `class_prior` — GaussianNB infers priors from data;
+# Class imbalance is addressed via `class_prior` - GaussianNB infers priors from data;
 # for MultinomialNB the uniform prior is set explicitly to down-weight the majority class.
 # #
 # %%
@@ -849,26 +849,18 @@ display(_df_svm)
 # %% [markdown]
 # #### 3.4.4 Tree Ensemble Classifiers
 # #
-# Four tree-based models are evaluated:
-# #
+# The following code trains LightGBM on each of the three representations using the same 5-fold stratified cross-validation function used earlier. This allows the LightGBM results to be compared fairly against Logistic Regression, Naive Bayes, and Linear SVM using the same macro-averaged evaluation metrics.
+# 
+# For the tree-based ensemble comparison, **LightGBM** was evaluated across the three document representations: Bag-of-Words, Unweighted FastText, and TF-IDF Weighted FastText.
+# 
+# LightGBM was selected because it is an efficient gradient boosting model that can handle large feature spaces and non-linear relationships well. Since the target variable `is_a_buyer` is imbalanced, `is_unbalance=True` was used so that LightGBM handles the class imbalance internally during training.
+# 
 # | Model | Notes |
 # |---|---|
-# | **Random Forest** | Bagging of deep trees; `class_weight='balanced_subsample'` per-tree |
-# | **Gradient Boosting** | sklearn's native boosting; slow on large BoW but accurate |
-# | **XGBoost** | Fast gradient boosting; `scale_pos_weight` handles imbalance |
-# | **LightGBM** | Histogram-based boosting; `is_unbalance=True` for imbalance |
-# #
+# | LightGBM | Histogram-based gradient boosting model; `is_unbalance=True` is used to handle the imbalanced target variable |
 # %%
 _n_buyers     = int((df_count["is_a_buyer"] == 1).sum())
 _n_nonbuyers  = int((df_count["is_a_buyer"] == 0).sum())
-_scale_pos_w  = _n_nonbuyers / _n_buyers  # XGBoost imbalance weight
-
-_xgb = XGBClassifier(
-    n_estimators=300, learning_rate=0.1, max_depth=4,
-    scale_pos_weight=_scale_pos_w,
-    eval_metric="logloss", use_label_encoder=False,
-    n_jobs=-1, random_state=RANDOM_STATE,
-)
 
 _lgbm = LGBMClassifier(
     n_estimators=300, learning_rate=0.1, max_depth=4,
@@ -877,7 +869,7 @@ _lgbm = LGBMClassifier(
 )
 
 _ensemble_models = [
-    ("XGBoost",           _xgb),
+    
     ("LightGBM",          _lgbm),
 ]
 
@@ -915,77 +907,70 @@ display(_df_ensemble)
 # 3. TF-IDF Weighted FastText
 # 
 # Since the target variable `is_a_buyer` is imbalanced, **Macro-F1** was used as the main evaluation metric. Accuracy was also reported, but it was not used as the primary metric because it can be biased toward the majority class.
+# It is worth to note that the experiments involve random processes such as cross-validation splitting, LightGBM training, randomized hyperparameter search, and internal sampling, the exact metric values may differ slightly each time the notebook is run. However, these differences were very small and did not change the overall conclusion: LightGBM with Unweighted FastText performed best in Q1, and the tuned LightGBM model with Unweighted FastText, feature engineering, and product metadata performed best in Q2.
 # 
 # ##### Macro-F1 Comparison Across Models
 # 
 # | Classifier          | Bag-of-Words | Unweighted FastText | Weighted FastText | Average Macro-F1 |
 # | ------------------- | -----------: | ------------------: | ----------------: | ---------------: |
-# | Logistic Regression |       0.5796 |              0.5786 |            0.5768 |           0.5783 |
-# | Naive Bayes         |       0.5596 |              0.5426 |            0.5660 |           0.5561 |
-# | Linear SVM          |       0.5746 |              0.5772 |            0.5767 |           0.5762 |
-# | XGBoost             |       0.5841 |              0.6113 |            0.6099 |       **0.6018** |
-# | LightGBM            |       0.5842 |          **0.6115** |            0.6088 |           0.6015 |
-# 
+# | Logistic Regression | 0.5796 (std 0.0034) | 0.5764 (std 0.0015) | 0.5750 (std 0.0021) | 0.5770 |
+# | Naive Bayes         | 0.5596 (std 0.0041) | 0.5434 (std 0.0106) | 0.5657 (std 0.0036) | 0.5562 |
+# | Linear SVM          | 0.5746 (std 0.0024) | 0.5743 (std 0.0017) | 0.5738 (std 0.0025) | 0.5742 |
+# | LightGBM            | 0.5842 (std 0.0044) | **0.6100 (std 0.0063)** | 0.6075 (std 0.0048) | **0.6006** |
 # 
 # ##### Best Model by Representation
-# #
+# 
 # | Feature Representation | Best Classifier | Best Macro-F1 |
 # | ---------------------- | --------------- | ------------: |
-# | Bag-of-Words           | LightGBM        |        0.5842 |
-# | Unweighted FastText    | LightGBM        |    **0.6115** |
-# | Weighted FastText      | XGBoost         |        0.6099 |
-# #
+# | Bag-of-Words           | LightGBM        | 0.5842 (std 0.0044) |
+# | Unweighted FastText    | LightGBM        | **0.6100 (std 0.0063)** |
+# | Weighted FastText      | LightGBM        | 0.6075 (std 0.0048) |
+# 
 # ##### Analysis
 # 
-# Among all tested classifiers, **XGBoost achieved the highest average Macro-F1 score** across the three feature representations, with an average of 0.6018, slightly edging out LightGBM at 0.6015.
-# 
-# Although the difference between XGBoost and LightGBM was very small, XGBoost performed slightly better on average. However, LightGBM achieved the single best Macro-F1 score overall on Unweighted FastText (0.6115), making the two models essentially equivalent in practice.
+# Among all tested classifiers, **LightGBM achieved the highest average Macro-F1 score** across the three feature representations, with an average Macro-F1 of **0.6006**. It also achieved the best Macro-F1 score for every individual representation: Bag-of-Words, Unweighted FastText, and Weighted FastText.
 # 
 # ```text
 # Bag-of-Words:
-# LightGBM = 0.5842
-# XGBoost  = 0.5841
+# LightGBM = 0.5842 (std 0.0044)
 # 
 # Unweighted FastText:
-# LightGBM = 0.6115
-# XGBoost  = 0.6113
+# LightGBM = 0.6100 (std 0.0063)
 # 
 # Weighted FastText:
-# XGBoost  = 0.6099
-# LightGBM = 0.6088
-# ```
+# LightGBM = 0.6075 (std 0.0048)
 # %% [markdown]
+# The strongest overall result was obtained using **LightGBM with Unweighted FastText**, which achieved a Macro-F1 score of **0.6100 (std 0.0063)**. Weighted FastText with LightGBM performed very similarly, with a Macro-F1 score of **0.6075 (std 0.0048)**, while Bag-of-Words achieved a lower but still competitive score of **0.5842 (std 0.0044)**.
 # 
-# %% [markdown]
+# Compared with Logistic Regression, Linear SVM, and Naive Bayes, **LightGBM performed better overall**. This suggests that the non-linear boosting approach was better able to capture useful patterns from the document representations, especially the dense FastText-based features.
+# 
 # #### 3.4.6 Q1 Discussion *(3 marks)*
 # 
 # **Title:** LightGBM with Unweighted FastText Achieves the Best Classification Performance
 # 
-# Across all classifiers and feature representations evaluated in Q1, LightGBM with Unweighted FastText achieved the best overall performance under 5-fold cross-validation. Since the target variable `is_a_buyer` is imbalanced, Macro-F1 was used as the main evaluation metric because it gives equal importance to both the `Buyer` and `Not a Buyer` classes.
+# Across all classifiers and feature representations evaluated in Q1, **LightGBM with Unweighted FastText** achieved the best overall performance under 5-fold cross-validation. Since the target variable `is_a_buyer` is imbalanced, **Macro-F1** was used as the main evaluation metric because it gives equal importance to both the `Buyer` and `Not a Buyer` classes.
 # 
 # The best-performing configuration was:
 # 
 # | Classifier | Feature Representation | Macro-F1 |
 # | ---------- | ---------------------- | -------: |
-# | LightGBM   | Unweighted FastText    | **0.6115** |
+# | LightGBM   | Unweighted FastText    | **0.6100 (std 0.0063)** |
 # 
-# Although the performance difference between LightGBM and XGBoost was very small, XGBoost achieved the highest overall average Macro-F1 across the three feature representations (0.6018 vs 0.6015), while LightGBM achieved the single best score on Unweighted FastText.
+# LightGBM was the strongest classifier overall, achieving the highest average Macro-F1 score across the three representations. It performed best on Unweighted FastText, followed closely by Weighted FastText, while Bag-of-Words produced a lower Macro-F1 score.
 # 
-# | Representation      | XGBoost Macro-F1 | LightGBM Macro-F1 |
-# | ------------------- | ---------------: | ----------------: |
-# | Bag-of-Words        |           0.5841 |        **0.5842** |
-# | Unweighted FastText |           0.6113 |        **0.6115** |
-# | Weighted FastText   |       **0.6099** |            0.6088 |
+# | Representation      | LightGBM Macro-F1 |
+# | ------------------- | ----------------: |
+# | Bag-of-Words        | 0.5842 (std 0.0044) |
+# | Unweighted FastText | **0.6100 (std 0.0063)** |
+# | Weighted FastText   | 0.6075 (std 0.0048) |
 # 
-# This shows that LightGBM performed slightly better for Bag-of-Words and Unweighted FastText, while XGBoost performed slightly better for Weighted FastText. Since the single best overall result was obtained with Unweighted FastText + LightGBM, LightGBM was selected as the strongest model for Q1.
+# Compared with Logistic Regression, Linear SVM, and Naive Bayes, **LightGBM achieved the strongest results overall**. Logistic Regression and Linear SVM performed reasonably well, especially with Bag-of-Words, but their Macro-F1 scores remained lower and more consistent across representations. This suggests that the linear models did not benefit as much from the dense FastText representations as LightGBM did.
 # 
-# Compared with Logistic Regression, Linear SVM, and Naive Bayes, the boosting models performed better overall. Logistic Regression and Linear SVM worked reasonably well with Bag-of-Words, achieving Macro-F1 scores of 0.5796 and 0.5746 respectively. However, their performance was comparable across all three representations, suggesting that linear models do not benefit as much from dense embedding features as boosting models do.
+# Naive Bayes achieved the highest accuracy for Bag-of-Words, with an accuracy of **0.7804 (std 0.0011)**, but its Macro-F1 was only **0.5596 (std 0.0041)**. This confirms that accuracy alone is not reliable for this task because the dataset is imbalanced. A high accuracy score may indicate that the model predicts the majority class well, but it does not necessarily mean that the model performs well across both classes.
 # 
-# Naive Bayes achieved the highest accuracy for Bag-of-Words, with an accuracy of 0.7804, but its Macro-F1 was only 0.5596. This confirms that accuracy alone is not reliable for this task because the dataset is imbalanced. A high accuracy score may indicate that the model is predicting the majority class well, but it does not necessarily mean that the model performs well across both classes.
+# The FastText-based representations performed best when combined with LightGBM. In particular, Unweighted FastText achieved the strongest result, with a Macro-F1 score of **0.6100 (std 0.0063)**. Weighted FastText was very close, with a Macro-F1 score of **0.6075 (std 0.0048)**, but it did not improve over the unweighted version. This suggests that the dense FastText embeddings already captured useful semantic information from the review text, and that TF-IDF weighting did not provide a clear additional benefit in this case.
 # 
-# The FastText-based representations performed best when combined with boosting models. In particular, Unweighted FastText achieved the strongest result with LightGBM. This suggests that the dense embedding representation captured sufficient semantic information from the review text on its own, and that TF-IDF reweighting did not provide additional benefit in this case — possibly because the FastText embeddings already encode term importance implicitly through the training process.
-# 
-# In summary, LightGBM with Unweighted FastText was selected as the best model for Q1 because it achieved the highest Macro-F1 score among all tested model and representation combinations (0.6115). This result suggests that a non-linear boosting classifier can make better use of dense semantic embedding features than simpler linear and probabilistic classifiers in this buyer-identification task.
+# In summary, **LightGBM with Unweighted FastText** was selected as the best model for Q1 because it achieved the highest Macro-F1 score among all tested model and representation combinations. This result suggests that a non-linear boosting classifier can make better use of dense semantic embedding features than simpler linear and probabilistic classifiers in this buyer-identification task.
 # %% [markdown]
 # ### 3.5 Q2 — Does More Information Improve Accuracy? *(6 marks)*
 # 
@@ -1817,9 +1802,9 @@ display(_q2_results)
 # %% [markdown]
 # #### 3.5.8 Q2 Discussion *(6 marks)*
 # 
-# Yes. The experimental results show that adding more information beyond the review description improves model performance.
+# Yes. The experimental results show that adding more information beyond the review description improves model performance, especially when product-level numeric features are added.
 # 
-# To answer this question, ten feature configurations were compared using **LightGBM** with **5-fold cross-validation**, covering three text representations (BoW, Unweighted FastText, Weighted FastText) each progressively enriched with numeric and product features:
+# To answer this question, ten feature configurations were compared using **LightGBM** with **5-fold cross-validation**, covering three text representations: Bag-of-Words, Unweighted FastText, and Weighted FastText. The models were evaluated using macro-averaged metrics because the target variable `is_a_buyer` is imbalanced.
 # 
 # | Configuration | Accuracy | Macro Precision | Macro Recall | Macro F1 |
 # |---|---:|---:|---:|---:|
@@ -1827,39 +1812,38 @@ display(_q2_results)
 # | BoW: text + title | 0.6649 (std 0.0038) | 0.6084 (std 0.0033) | 0.6541 (std 0.0048) | 0.6033 (std 0.0038) |
 # | BoW: text + title + price + log1p(rating count) | 0.7375 (std 0.0061) | 0.7074 (std 0.0038) | 0.8050 (std 0.0049) | 0.7022 (std 0.0057) |
 # | BoW: text + title + price + log1p(rating count) + product title | 0.7414 (std 0.0048) | 0.7116 (std 0.0028) | 0.8112 (std 0.0036) | 0.7068 (std 0.0043) |
-# | Unweighted FastText: review text only | 0.6827 (std 0.0071) | 0.6084 (std 0.0063) | 0.6479 (std 0.0084) | 0.6097 (std 0.0073) |
-# | Unweighted FastText + price + log1p(rating count) | 0.7611 (std 0.0048) | 0.7097 (std 0.0037) | 0.7985 (std 0.0047) | 0.7175 (std 0.0048) |
-# | Unweighted FastText + price + log1p(rating count) + product title | 0.7576 (std 0.0044) | 0.7141 (std 0.0026) | 0.8094 (std 0.0029) | 0.7182 (std 0.0040) |
-# | Weighted FastText: review text only | 0.6800 (std 0.0058) | 0.6050 (std 0.0048) | 0.6430 (std 0.0060) | 0.6060 (std 0.0057) |
-# | Weighted FastText + price + log1p(rating count) | 0.7580 (std 0.0032) | 0.7074 (std 0.0030) | 0.7958 (std 0.0044) | 0.7144 (std 0.0035) |
-# | **Weighted FastText + price + log1p(rating count) + product title** | 0.7550 (std 0.0047) | 0.7130 (std 0.0029) | 0.8086 (std 0.0036) | **0.7160 (std 0.0043)** |
-# #
+# | Unweighted FastText: review text only | 0.6841 (std 0.0039) | 0.6081 (std 0.0026) | 0.6467 (std 0.0040) | 0.6098 (std 0.0029) |
+# | Unweighted FastText + price + log1p(rating count) | 0.7612 (std 0.0054) | 0.7095 (std 0.0037) | 0.7981 (std 0.0042) | 0.7174 (std 0.0052) |
+# | **Unweighted FastText + price + log1p(rating count) + product title** | 0.7573 (std 0.0033) | 0.7138 (std 0.0022) | 0.8090 (std 0.0028) | **0.7178 (std 0.0031)** |
+# | Weighted FastText: review text only | 0.6798 (std 0.0055) | 0.6060 (std 0.0036) | 0.6449 (std 0.0050) | 0.6068 (std 0.0044) |
+# | Weighted FastText + price + log1p(rating count) | 0.7587 (std 0.0053) | 0.7083 (std 0.0041) | 0.7971 (std 0.0053) | 0.7153 (std 0.0052) |
+# | Weighted FastText + price + log1p(rating count) + product title | 0.7545 (std 0.0036) | 0.7122 (std 0.0024) | 0.8073 (std 0.0032) | 0.7153 (std 0.0033) |
+# 
 # ##### Analysis
-# #
-# The baseline models using only review text achieved Macro F1 scores of **0.6015** (BoW), **0.6097** (Unweighted FastText), and **0.6060** (Weighted FastText). This shows that review text alone contains useful signal for predicting `is_a_buyer`, but is not sufficient for strong performance on its own.
 # 
-# For BoW, adding `review_title` slightly increased Macro F1 from **0.6015** to **0.6033**, while accuracy dropped slightly from **0.6741** to **0.6649**. The small Macro F1 gain suggests the title adds marginal information, while the accuracy drop reflects a shift toward more balanced class predictions.
+# The baseline models using only review text achieved Macro-F1 scores of **0.6015 (std 0.0022)** for Bag-of-Words, **0.6098 (std 0.0029)** for Unweighted FastText, and **0.6068 (std 0.0044)** for Weighted FastText. This shows that review text alone contains useful information for predicting `is_a_buyer`, but it is not enough to achieve the strongest performance.
 # 
-# The largest single improvement across all representations came from adding `price` and `log1p(product_rating_count)`. For BoW, Macro F1 jumped from **0.6033** to **0.7022**. For Unweighted FastText, it jumped from **0.6097** to **0.7175**. For Weighted FastText, it jumped from **0.6060** to **0.7144**. This confirms that product-level numeric features are the strongest contributors to classification performance, regardless of the text representation used.
+# For Bag-of-Words, adding the review title slightly increased Macro-F1 from **0.6015 (std 0.0022)** to **0.6033 (std 0.0038)**, while accuracy decreased from **0.6741 (std 0.0024)** to **0.6649 (std 0.0038)**. This suggests that the title adds a small amount of extra information, but the improvement is limited when only text-based features are used.
 # 
-# Adding `product_title` on top of the numeric features further improved Macro F1 across all three representations: BoW improved from **0.7022** to **0.7068**, Unweighted FastText from **0.7175** to **0.7182**, and Weighted FastText from **0.7144** to **0.7160**. These gains suggest that product title encodes useful product-specific patterns such as product type, shade, formula, or size that are not fully captured by the numeric features or review text alone.
+# The largest improvement came from adding `price` and `log1p(product_rating_count)`. For Bag-of-Words, Macro-F1 increased from **0.6033 (std 0.0038)** to **0.7022 (std 0.0057)**. For Unweighted FastText, it increased from **0.6098 (std 0.0029)** to **0.7174 (std 0.0052)**. For Weighted FastText, it increased from **0.6068 (std 0.0044)** to **0.7153 (std 0.0052)**. This shows that product-level numeric features were the strongest contributors to performance improvement across all three representations.
 # 
-# Comparing text representations at the full feature level, Unweighted FastText achieved the highest Macro F1 of **0.7182**, slightly above Weighted FastText (**0.7160**) and BoW (**0.7068**). This is consistent with the Q1 finding that Unweighted FastText works well with LightGBM.
+# Adding the product title on top of the numeric features gave smaller additional gains. Bag-of-Words improved from **0.7022 (std 0.0057)** to **0.7068 (std 0.0043)**, and Unweighted FastText improved slightly from **0.7174 (std 0.0052)** to **0.7178 (std 0.0031)**. For Weighted FastText, the Macro-F1 remained the same at **0.7153**, although the standard deviation decreased from **0.0052** to **0.0033**, suggesting slightly more stable performance across folds.
 # 
-# Overall, the results clearly show that adding more information consistently improves classification performance across all three text representations.
+# Comparing the full feature configurations, **Unweighted FastText + price + log1p(product_rating_count) + product title** achieved the highest Macro-F1 score of **0.7178 (std 0.0031)**. This was slightly higher than Weighted FastText with the same added features, which achieved **0.7153 (std 0.0033)**, and Bag-of-Words with the same added features, which achieved **0.7068 (std 0.0043)**.
+# 
+# Overall, the results show that adding more information improves classification performance. The biggest improvement came from adding product-level numeric features, while adding product title gave smaller but still useful gains for some representations.
 # 
 # ##### Best Configuration
-# #
+# 
 # The best-performing configuration was:
 # 
 # ```text
 # Unweighted FastText + price + log1p(product_rating_count) + product title
 # Classifier: LightGBM
-# Accuracy:        0.7576 (std 0.0044)
-# Macro Precision: 0.7141 (std 0.0026)
-# Macro Recall:    0.8094 (std 0.0029)
-# Macro F1:        0.7182 (std 0.0040)
-# ```
+# Accuracy:        0.7573 (std 0.0033)
+# Macro Precision: 0.7138 (std 0.0022)
+# Macro Recall:    0.8090 (std 0.0028)
+# Macro F1:        0.7178 (std 0.0031)
 # %% [markdown]
 # #### 3.5.9 Q2 Enhanced Feature Set
 # %% [markdown]
@@ -1867,12 +1851,12 @@ display(_q2_results)
 # 
 # The baseline configurations relied solely on text features (review text and title) and basic numeric fields (price, rating count). To improve classification performance, additional features were engineered to capture signals that raw text may not express directly:
 # 
-# - **Price and rating features** (`log_price`, `log_rating_count`, `is_expensive`) — buyers may tend to review products at specific price points or popularity levels
-# - **Rating gap** (`rating_gap`) — a reviewer who rates differently from the product average may signal a more engaged, genuine buyer
-# - **Value score** (`value_score`) — combines rating and price to reflect perceived value, which may differ between buyers and non-buyers
-# - **Text length features** (`review_text_word_count`, `review_title_word_count`) — buyers tend to write more detailed reviews than non-buyers
-# - **Product metadata** (`product_title`, `brand_name`) — product category and brand can be strong indicators of purchase likelihood
-# - **Tag availability** (`has_product_tags`) — whether a product has tags may correlate with product type or buyer engagement
+# - **Price and rating features** (`log_price`, `log_rating_count`, `is_expensive`) - buyers may tend to review products at specific price points or popularity levels
+# - **Rating gap** (`rating_gap`) - a reviewer who rates differently from the product average may signal a more engaged, genuine buyer
+# - **Value score** (`value_score`) - combines rating and price to reflect perceived value, which may differ between buyers and non-buyers
+# - **Text length features** (`review_text_word_count`, `review_title_word_count`) - buyers tend to write more detailed reviews than non-buyers
+# - **Product metadata** (`product_title`, `brand_name`) - product category and brand can be strong indicators of purchase likelihood
+# - **Tag availability** (`has_product_tags`) - whether a product has tags may correlate with product type or buyer engagement
 # %%
 # ------------------------------------------------------------
 # 1. Build feature-engineered dataframe
@@ -2014,15 +1998,15 @@ display(_q2_fe_results)
 # %% [markdown]
 # ##### 3.5.9.2 Analysis of Q2 Enhanced Feature Set Result
 # 
-# The enhanced Q2 model combines several sources of information: the Unweighted FastText embeddings of the review text and review title, engineered numeric features, and product metadata such as product title and brand name. The model was evaluated using **5-fold cross-validation with LightGBM** as the classifier.
+# The enhanced Q2 model combines several sources of information: **Unweighted FastText embeddings** from the review text and review title, engineered numeric features, and product metadata such as product title and brand name. The model was evaluated using **5-fold cross-validation with LightGBM** as the classifier.
 # 
-# The final result shows that this enhanced feature set achieved an average accuracy of **0.8032 (std 0.0026)** and a **Macro-F1 score of 0.7496 (std 0.0021)**.
+# The final enhanced feature set achieved an average accuracy of **0.8032 (std 0.0026)** and a **Macro-F1 score of 0.7496 (std 0.0021)**. This is the strongest result obtained in Q2, showing that adding structured product and review information clearly improved classification performance beyond text features alone.
 # 
-# Compared with the earlier Q2 configurations, this is a clear improvement over the previous best configuration using Unweighted FastText with price, rating count, and product title, which achieved a Macro-F1 score of **0.7182**. The jump to **0.7496** shows that the additional engineered features — `review_rating`, `avg_product_rating`, `rating_gap`, `value_score`, `log_price`, text length features, and brand name — provided meaningful extra signal that the simpler feature set could not capture.
+# Compared with the earlier Q2 configurations, this enhanced model improved over the previous best configuration, **Unweighted FastText + price + log1p(product_rating_count) + product title**, which achieved a Macro-F1 score of **0.7178 (std 0.0031)**. The increase from **0.7178** to **0.7496** shows that the additional engineered features, including `review_rating`, `avg_product_rating`, `rating_gap`, `value_score`, `log_price`, text length features, and brand name, provided useful extra signal that the simpler feature set did not fully capture.
 # 
-# Compared with the Q1 best model (LightGBM with Unweighted FastText, Macro-F1 **0.6115**), the enhanced Q2 model represents an improvement of **+0.1381**, confirming that combining dense semantic embeddings with structured product and review metadata substantially strengthens the classifier.
+# Compared with the Q1 best model, **LightGBM with Unweighted FastText**, which achieved a Macro-F1 score of **0.6100 (std 0.0063)**, the enhanced Q2 model improved Macro-F1 by **+0.1396**. This confirms that combining dense semantic text embeddings with structured product and review metadata substantially strengthens the classifier.
 # 
-# Across the five folds, both accuracy and Macro-F1 were stable, with standard deviations of **0.0026** and **0.0021** respectively. This consistency across splits suggests the improvement is genuine and not driven by a single favorable fold.
+# Across the five folds, both accuracy and Macro-F1 were stable, with standard deviations of **0.0026** and **0.0021** respectively. This consistency suggests that the improvement is reliable and not caused by one unusually favorable validation fold.
 # %% [markdown]
 # #### 3.5.10 Confusion Matrix — Q2 Best Model
 # %%
@@ -2109,20 +2093,20 @@ print(
 # 
 # | Prediction Outcome | Count |
 # |---|---:|
-# | True Negative (TN) | 10,434 |
-# | False Positive (FP) | 2,628 |
-# | False Negative (FN) | 9,425 |
-# | True Positive (TP) | 38,797 |
+# | True Negative (TN) | 10,445 |
+# | False Positive (FP) | 2,617 |
+# | False Negative (FN) | 9,458 |
+# | True Positive (TP) | 38,764 |
 # 
-# The model correctly identified **38,797 out of 48,222 Buyer reviews** (recall 0.8044) and **10,434 out of 13,062 Not Buyer reviews** (recall 0.7988). Compared with the previous BoW-based enhanced model, both recalls are now much closer to each other — **0.8044** vs **0.7988** — indicating that the model is making more balanced predictions across the two classes.
+# The model correctly identified **38,764 out of 48,222 Buyer reviews** and **10,445 out of 13,062 Not Buyer reviews**. This corresponds to a recall of **0.8039** for the `Buyer` class and **0.7996** for the `Not Buyer` class, showing that the model performs fairly consistently across both classes.
 # 
-# The **2,628 false positives** represent `Not Buyer` reviews incorrectly predicted as `Buyer`. This is notably higher than the previous model's 848, which explains the lower precision for the `Not Buyer` class (0.5252). The model is more aggressive in predicting `Buyer`, which improves recall on that class but at the cost of more false alarms on `Not Buyer`.
+# The **2,617 false positives** represent `Not Buyer` reviews incorrectly predicted as `Buyer`. This explains why the precision for the `Not Buyer` class is relatively low at **0.5248**, because the dataset is imbalanced and the model tends to predict the majority `Buyer` class more often.
 # 
-# The **9,425 false negatives** represent actual `Buyer` reviews that the model missed. This is significantly lower than the previous model's 14,001, showing that the enhanced feature set helped the model catch substantially more true buyers.
+# The **9,458 false negatives** represent actual `Buyer` reviews that were incorrectly predicted as `Not Buyer`. Although this number is larger in absolute terms, it should be interpreted in relation to the much larger number of `Buyer` examples in the dataset.
 # 
-# The class-level F1 scores reflect this trade-off: **0.6337 for Not Buyer** and **0.8655 for Buyer**. The gap between the two classes narrowed compared with the previous model (which had 0.6222 and 0.8219), confirming that the Unweighted FastText embeddings combined with engineered features produced more balanced performance across both classes.
+# The class-level F1 scores reflect this trade-off: **0.6337** for `Not Buyer` and **0.8652** for `Buyer`. The `Buyer` class performs better overall because it has many more training examples, while the minority `Not Buyer` class remains harder to predict accurately.
 # 
-# Overall, the confusion matrix shows that the enhanced model improved recall on both classes simultaneously, with the largest gain coming from reducing missed buyers — the most practically important error type in this task.
+# Overall, the confusion matrix shows that the enhanced Q2 model achieves strong performance for the majority `Buyer` class while also maintaining reasonable recall for the minority `Not Buyer` class. This supports the conclusion that combining Unweighted FastText embeddings with feature engineering and product metadata improved the model's ability to make more balanced predictions across both classes.
 # %% [markdown]
 # #### 3.5.11 Hyperparameter Tuning for Enhanced LightGBM
 # %%
@@ -2219,7 +2203,7 @@ display(_tuned_result_table)
 # %% [markdown]
 # ##### 3.5.11.1 Results Analysis: Tuned LightGBM
 # 
-# After identifying the enhanced feature set as the strongest Q2 representation, hyperparameter tuning was applied to **LightGBM** to further improve performance.
+# After identifying the enhanced feature set as the strongest Q2 representation, hyperparameter tuning was applied to **LightGBM** to further improve performance. The tuned model used **Unweighted FastText embeddings + feature engineering + product metadata** and LightGBM handled the class imbalance internally using `is_unbalance=True`.
 # 
 # The best parameters selected by the randomized search were:
 # 
@@ -2237,31 +2221,31 @@ display(_tuned_result_table)
 # bagging_fraction = 0.9
 # ```
 # 
-# The tuned LightGBM model achieved an accuracy of **0.8103 (std 0.0025)** and a **Macro-F1 score of 0.7528 (std 0.0027)**.
+# The tuned LightGBM model achieved an accuracy of **0.8102 (std 0.0029)** and a Macro-F1 score of **0.7520 (std 0.0028)**.
 # 
-# Compared with the untuned enhanced LightGBM model, tuning improved the results further:
+# Compared with the untuned enhanced LightGBM model, tuning improved the results slightly:
 # 
 # | Metric | Untuned Enhanced LightGBM | Tuned Enhanced LightGBM | Change |
 # |---|---:|---:|---:|
-# | Accuracy | 0.8032 | 0.8103 | 0.0071 |
-# | Precision(M) | 0.7309 | 0.7339 | 0.0030 |
-# | Recall(M) | 0.8016 | 0.7954 | -0.0062 |
-# | F1(M) | 0.7496 | 0.7528 | 0.0032 |
+# | Accuracy | 0.8030 | 0.8102 | +0.0072 |
+# | Precision(M) | 0.7308 | 0.7333 | +0.0025 |
+# | Recall(M) | 0.8018 | 0.7934 | -0.0084 |
+# | F1(M) | 0.7495 | 0.7520 | +0.0025 |
 # 
-# The Macro-F1 improved from **0.7496** to **0.7528**. The small but consistent gain confirms that hyperparameter tuning helped the model make better use of the Unweighted FastText embeddings combined with the engineered feature set. Notably, recall decreased slightly by 0.0062 while precision increased, suggesting the tuned model became more conservative — predicting `Buyer` only when more confident, which reduced false positives at the cost of a few more missed buyers.
+# The Macro-F1 improved from **0.7495** to **0.7520**, showing that hyperparameter tuning provided a small but useful improvement. Accuracy and macro precision also increased, while macro recall decreased slightly. This suggests that the tuned model became more conservative in its predictions, improving precision but missing slightly more positive cases.
 # 
-# The tuned model was stable across the five folds, with a Macro-F1 standard deviation of **0.0027**, slightly higher than the untuned model's **0.0021**, indicating consistent performance across validation splits.
+# The tuned model was stable across the five folds, with a Macro-F1 standard deviation of **0.0028**. This indicates that the model performed consistently across the validation splits and that the improvement was not caused by one unusually strong fold.
 # 
-# Compared with the previous best Q2 configuration (Unweighted FastText + price + log1p(rating count) + product title), the tuned enhanced model achieved a stronger result:
+# Compared with the previous best Q2 configuration, **Unweighted FastText + price + log1p(product_rating_count) + product title**, the tuned enhanced model achieved a stronger result:
 # 
 # | Metric | Previous Best Q2 Model | Tuned Enhanced LightGBM | Change |
 # |---|---:|---:|---:|
-# | Accuracy | 0.7576 | 0.8103 | 0.0527 |
-# | Precision(M) | 0.7141 | 0.7339 | 0.0198 |
-# | Recall(M) | 0.8094 | 0.7954 | -0.0140 |
-# | F1(M) | 0.7182 | 0.7528 | 0.0346 |
+# | Accuracy | 0.7573 | 0.8102 | +0.0529 |
+# | Precision(M) | 0.7138 | 0.7333 | +0.0195 |
+# | Recall(M) | 0.8090 | 0.7934 | -0.0156 |
+# | F1(M) | 0.7178 | 0.7520 | +0.0342 |
 # 
-# This confirms that both feature engineering and hyperparameter tuning improved the Q2 model. Therefore, the final selected Q2 model is **Tuned LightGBM with Unweighted FastText embeddings, engineered features, and product metadata**, because it achieved the highest Macro-F1 score of **0.7528**.
+# This confirms that the enhanced feature engineering and hyperparameter tuning improved the Q2 model overall. Although macro recall decreased slightly compared with the previous best Q2 model, the tuned enhanced model achieved much higher accuracy, macro precision, and Macro-F1. Therefore, the final selected Q2 model is **Tuned LightGBM with Unweighted FastText embeddings, engineered features, and product metadata**, because it achieved the highest Macro-F1 score of **0.7520 (std 0.0028)**.
 # %% [markdown]
 # #### 3.5.12 Q2 Final Discussion: Does More Information Improve Classification Performance?
 # 
@@ -2278,6 +2262,7 @@ display(_tuned_result_table)
 # Since the target variable `is_a_buyer` is imbalanced, **Macro-F1** was used as the main evaluation metric. Accuracy was also reported, but Macro-F1 is more reliable for this task because it gives equal importance to both the `Buyer` and `Not Buyer` classes.
 # %% [markdown]
 # ##### Comparison of Q2 Results
+# As noted earlier, small metric differences may occur between runs due to randomness in model training and validation, but the ranking of the best configurations remained stable.
 # 
 # | Feature Set | Classifier | Accuracy | Precision(M) | Recall(M) | F1(M) |
 # |---|---|---:|---:|---:|---:|
@@ -2285,53 +2270,55 @@ display(_tuned_result_table)
 # | BoW: text + title | LightGBM | 0.6649 (std 0.0038) | 0.6084 (std 0.0033) | 0.6541 (std 0.0048) | 0.6033 (std 0.0038) |
 # | BoW: text + title + price + log1p(rating count) | LightGBM | 0.7375 (std 0.0061) | 0.7074 (std 0.0038) | 0.8050 (std 0.0049) | 0.7022 (std 0.0057) |
 # | BoW: text + title + price + log1p(rating count) + product title | LightGBM | 0.7414 (std 0.0048) | 0.7116 (std 0.0028) | 0.8112 (std 0.0036) | 0.7068 (std 0.0043) |
-# | Unweighted FastText: review text only | LightGBM | 0.6827 (std 0.0071) | 0.6084 (std 0.0063) | 0.6479 (std 0.0084) | 0.6097 (std 0.0073) |
-# | Unweighted FastText + price + log1p(rating count) | LightGBM | 0.7611 (std 0.0048) | 0.7097 (std 0.0037) | 0.7985 (std 0.0047) | 0.7175 (std 0.0048) |
-# | Unweighted FastText + price + log1p(rating count) + product title | LightGBM | 0.7576 (std 0.0044) | 0.7141 (std 0.0026) | 0.8094 (std 0.0029) | 0.7182 (std 0.0040) |
-# | Weighted FastText: review text only | LightGBM | 0.6800 (std 0.0058) | 0.6050 (std 0.0048) | 0.6430 (std 0.0060) | 0.6060 (std 0.0057) |
-# | Weighted FastText + price + log1p(rating count) | LightGBM | 0.7580 (std 0.0032) | 0.7074 (std 0.0030) | 0.7958 (std 0.0044) | 0.7144 (std 0.0035) |
-# | Weighted FastText + price + log1p(rating count) + product title | LightGBM | 0.7550 (std 0.0047) | 0.7130 (std 0.0029) | 0.8086 (std 0.0036) | 0.7160 (std 0.0043) |
-# | Unweighted FastText + feature engineering + product metadata | LightGBM | 0.8032 (std 0.0026) | 0.7309 (std 0.0018) | 0.8016 (std 0.0020) | 0.7496 (std 0.0021) |
-# | **Tuned: Unweighted FastText + feature engineering + product metadata** | **Tuned LightGBM** | **0.8103 (std 0.0025)** | **0.7339 (std 0.0025)** | **0.7954 (std 0.0044)** | **0.7528 (std 0.0027)** |
+# | Unweighted FastText: review text only | LightGBM | 0.6841 (std 0.0039) | 0.6081 (std 0.0026) | 0.6467 (std 0.0040) | 0.6098 (std 0.0029) |
+# | Unweighted FastText + price + log1p(rating count) | LightGBM | 0.7612 (std 0.0054) | 0.7095 (std 0.0037) | 0.7981 (std 0.0042) | 0.7174 (std 0.0052) |
+# | Unweighted FastText + price + log1p(rating count) + product title | LightGBM | 0.7573 (std 0.0033) | 0.7138 (std 0.0022) | 0.8090 (std 0.0028) | 0.7178 (std 0.0031) |
+# | Weighted FastText: review text only | LightGBM | 0.6798 (std 0.0055) | 0.6060 (std 0.0036) | 0.6449 (std 0.0050) | 0.6068 (std 0.0044) |
+# | Weighted FastText + price + log1p(rating count) | LightGBM | 0.7587 (std 0.0053) | 0.7083 (std 0.0041) | 0.7971 (std 0.0053) | 0.7153 (std 0.0052) |
+# | Weighted FastText + price + log1p(rating count) + product title | LightGBM | 0.7545 (std 0.0036) | 0.7122 (std 0.0024) | 0.8073 (std 0.0032) | 0.7153 (std 0.0033) |
+# | Unweighted FastText + feature engineering + product metadata | LightGBM | 0.8030 (std 0.0029) | 0.7308 (std 0.0022) | 0.8018 (std 0.0020) | 0.7495 (std 0.0025) |
+# | **Tuned: Unweighted FastText + feature engineering + product metadata** | **Tuned LightGBM** | **0.8102 (std 0.0029)** | **0.7333 (std 0.0027)** | **0.7934 (std 0.0032)** | **0.7520 (std 0.0028)** |
 # %% [markdown]
 # ##### Best Result by Text Representation
 # 
 # | Text Representation | Best Configuration | Best Macro-F1 |
 # |---|---|---:|
-# | BoW | text + title + price + log1p(rating count) + product title | 0.7068 |
-# | Unweighted FastText | text + price + log1p(rating count) + product title | 0.7182 |
-# | Weighted FastText | text + price + log1p(rating count) + product title | 0.7160 |
-# | Unweighted FastText (feature engineered) | feature engineering + product metadata | 0.7496 |
-# | **Unweighted FastText (tuned)** | **feature engineering + product metadata** | **0.7528** |
+# | BoW | text + title + price + log1p(rating count) + product title | 0.7068 (std 0.0043) |
+# | Unweighted FastText | text + price + log1p(rating count) + product title | 0.7178 (std 0.0031) |
+# | Weighted FastText | text + price + log1p(rating count) + product title | 0.7153 (std 0.0033) |
+# | Unweighted FastText (feature engineered) | feature engineering + product metadata | 0.7495 (std 0.0025) |
+# | **Unweighted FastText (tuned)** | **feature engineering + product metadata** | **0.7520 (std 0.0028)** |
 # %% [markdown]
 # ##### Analysis
 # 
 # The results show a clear and consistent improvement as more information was added to the model across all three text representations.
 # 
-# The baseline models using only review text achieved Macro-F1 scores of **0.6015** (BoW), **0.6097** (Unweighted FastText), and **0.6060** (Weighted FastText). This shows that review text alone contains useful signal but is insufficient for strong classification performance on its own.
+# The baseline models using only review text achieved Macro-F1 scores of **0.6015 (std 0.0022)** for BoW, **0.6098 (std 0.0029)** for Unweighted FastText, and **0.6068 (std 0.0044)** for Weighted FastText. This shows that review text alone contains useful signal, but it is insufficient for strong classification performance on its own.
 # 
-# **BoW configurations:** Adding `review_title` slightly increased Macro-F1 from **0.6015** to **0.6033**, while accuracy dropped slightly from **0.6741** to **0.6649**. The small gain suggests the title adds marginal information. The largest jump came from adding `price` and `log1p(product_rating_count)`, bringing Macro-F1 to **0.7022**. Adding `product_title` further improved it to **0.7068**, the best BoW result.
+# **BoW configurations:** Adding `review_title` slightly increased Macro-F1 from **0.6015 (std 0.0022)** to **0.6033 (std 0.0038)**, while accuracy dropped from **0.6741 (std 0.0024)** to **0.6649 (std 0.0038)**. The small gain suggests that the title adds only marginal information. The largest jump came from adding `price` and `log1p(product_rating_count)`, bringing Macro-F1 to **0.7022 (std 0.0057)**. Adding `product_title` further improved it to **0.7068 (std 0.0043)**, which was the best BoW result.
 # 
-# **Unweighted FastText configurations:** Adding numeric features improved Macro-F1 from **0.6097** to **0.7175**, and adding `product_title` pushed it to **0.7182**. At every feature level, Unweighted FastText outperformed both BoW and Weighted FastText, confirming that dense semantic embeddings capture richer information than sparse word counts.
+# **Unweighted FastText configurations:** Adding numeric features improved Macro-F1 from **0.6098 (std 0.0029)** to **0.7174 (std 0.0052)**, and adding `product_title` pushed it slightly higher to **0.7178 (std 0.0031)**. At the full standard Q2 feature level, Unweighted FastText outperformed both BoW and Weighted FastText, suggesting that dense semantic embeddings captured richer information than sparse word counts.
 # 
-# **Weighted FastText configurations:** The pattern was consistent — numeric features improved Macro-F1 from **0.6060** to **0.7144**, and adding `product_title` brought it to **0.7160**. However, Weighted FastText consistently scored slightly below Unweighted FastText across all configurations, suggesting that TF-IDF reweighting did not provide additional benefit for this task.
+# **Weighted FastText configurations:** The same general pattern was observed. Numeric features improved Macro-F1 from **0.6068 (std 0.0044)** to **0.7153 (std 0.0052)**. Adding `product_title` kept the Macro-F1 at **0.7153**, but reduced the standard deviation from **0.0052** to **0.0033**, suggesting slightly more stable performance across folds. However, Weighted FastText remained slightly below Unweighted FastText, meaning that TF-IDF reweighting did not provide a clear additional benefit for this task.
 # 
-# **Enhanced feature engineering:** Building on the best Unweighted FastText configuration, adding engineered features — `rating_gap`, `value_score`, `log_price`, text length features, `avg_product_rating`, `review_rating`, and `brand_name` — pushed Macro-F1 from **0.7182** to **0.7496**, the second largest single gain in the entire experiment.
+# **Enhanced feature engineering:** Building on the best Unweighted FastText configuration, adding engineered features such as `rating_gap`, `value_score`, `log_price`, text length features, `avg_product_rating`, `review_rating`, and `brand_name` pushed Macro-F1 from **0.7178 (std 0.0031)** to **0.7495 (std 0.0025)**. This was one of the largest improvements in the experiment and shows that structured product and review metadata provided useful additional signal beyond text features alone.
 # 
-# **Hyperparameter tuning:** Applying randomized search to the enhanced model achieved the best overall result of **0.7528**, confirming that tuning helped the model make better use of the rich feature set.
+# **Hyperparameter tuning:** Applying randomized search to the enhanced model achieved the best overall result, with a Macro-F1 score of **0.7520 (std 0.0028)**. This confirms that tuning provided a small but useful improvement and helped LightGBM make better use of the richer feature set.
 # %% [markdown]
 # ##### Macro-F1 Improvement Summary
 # 
 # | Comparison | From | To | Macro-F1 Change |
 # |---|---:|---:|---:|
-# | BoW: text only → text + title | 0.6015 | 0.6033 | 0.0018 |
-# | BoW: text + title → text + title + price + rating count | 0.6033 | 0.7022 | 0.0989 |
-# | BoW: adding product title to numeric features | 0.7022 | 0.7068 | 0.0046 |
-# | Best BoW → Unweighted FastText (same features) | 0.7068 | 0.7182 | 0.0114 |
-# | Best BoW → Weighted FastText (same features) | 0.7068 | 0.7160 | 0.0092 |
-# | Unweighted FastText + product title → enhanced feature engineering | 0.7182 | 0.7496 | 0.0314 |
-# | Untuned enhanced model → tuned enhanced model | 0.7496 | 0.7528 | 0.0032 |
-# | BoW text only → tuned enhanced model (total improvement) | 0.6015 | 0.7528 | 0.1513 |
+# | BoW: text only → text + title | 0.6015 | 0.6033 | +0.0018 |
+# | BoW: text + title → text + title + price + rating count | 0.6033 | 0.7022 | +0.0989 |
+# | BoW: adding product title to numeric features | 0.7022 | 0.7068 | +0.0046 |
+# | Best BoW → Unweighted FastText with same standard features | 0.7068 | 0.7178 | +0.0110 |
+# | Best BoW → Weighted FastText with same standard features | 0.7068 | 0.7153 | +0.0085 |
+# | Unweighted FastText + product title → enhanced feature engineering | 0.7178 | 0.7495 | +0.0317 |
+# | Untuned enhanced model → tuned enhanced model | 0.7495 | 0.7520 | +0.0025 |
+# | BoW text only → tuned enhanced model, total improvement | 0.6015 | 0.7520 | +0.1505 |
+# 
+# The largest improvement came from adding `price` and `log1p(product_rating_count)` to the BoW text + title configuration, which increased Macro-F1 by **+0.0989**. Feature engineering and product metadata also gave a strong improvement, increasing Macro-F1 from **0.7178** to **0.7495**. Hyperparameter tuning gave a smaller but still positive gain, bringing the final Macro-F1 to **0.7520**. Overall, the model improved by **+0.1505** from the simplest BoW text-only baseline to the final tuned enhanced LightGBM model.
 # %% [markdown]
 # ##### Final Answer
 # 
@@ -2342,9 +2329,8 @@ display(_tuned_result_table)
 # ```text
 # Classifier:  Tuned LightGBM
 # Feature set: Unweighted FastText + feature engineering + product metadata
-# Accuracy:    0.8103 (std 0.0025)
-# Macro-F1:    0.7528 (std 0.0027)
+# Accuracy:    0.8102 (std 0.0029)
+# Macro-F1:    0.7520 (std 0.0028)
 # ```
 # 
-# Overall, the results show that review text alone was useful but limited. Adding review title, product-level numeric features, engineered features, and metadata increased Macro-F1 from **0.6015** to **0.7528** — an improvement of **0.1513** — clearly confirming that more information provides better classification performance.
-# %%
+# Overall, the results show that review text alone was useful but limited. Adding review title, product-level numeric features, engineered features, and metadata increased Macro-F1 from 0.6015 (std 0.0022) to 0.7520 (std 0.0028), an improvement of +0.1505. This clearly confirms that adding more information beyond the review description improved classification performance.
