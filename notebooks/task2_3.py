@@ -132,53 +132,7 @@ RANDOM_STATE  = 42   # Global seed for reproducibility
 # --- FastText config grid ---
 # Each entry is trained and evaluated via 3-fold CV; the best Macro-F1 wins.
 fasttext_configs = [
-    # Skip-gram, local context
-    {
-        "name": "ft_300_sg_w5_mc2_e10_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 10,
-        "sg": 1,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-    {
-        "name": "ft_300_sg_w5_mc2_e15_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 15,
-        "sg": 1,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-    {
-        "name": "ft_300_sg_w5_mc2_e20_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 20,
-        "sg": 1,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-
-    # # Skip-gram, wider context
-    {
-        "name": "ft_300_sg_w8_mc2_e15_n3_6",
-        "vector_size": 300,
-        "window": 8,
-        "min_count": 2,
-        "epochs": 15,
-        "sg": 1,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
+    # Best config (selected after grid search)
     {
         "name": "ft_300_sg_w10_mc2_e15_n3_6",
         "vector_size": 300,
@@ -190,76 +144,16 @@ fasttext_configs = [
         "max_n": 6,
         "workers": 4,
     },
-
-    # CBOW comparison
+    # Runner-up for comparison
     {
-        "name": "ft_300_cbow_w5_mc2_e15_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 15,
-        "sg": 0,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-    {
-        "name": "ft_300_cbow_w8_mc2_e15_n3_6",
+        "name": "ft_300_sg_w8_mc2_e15_n3_6",
         "vector_size": 300,
         "window": 8,
         "min_count": 2,
         "epochs": 15,
-        "sg": 0,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-
-    # # More aggressive rare-word filtering
-    {
-        "name": "ft_300_sg_w5_mc3_e15_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 3,
-        "epochs": 15,
         "sg": 1,
         "min_n": 3,
         "max_n": 6,
-        "workers": 4,
-    },
-    {
-        "name": "ft_300_sg_w5_mc5_e15_n3_6",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 5,
-        "epochs": 15,
-        "sg": 1,
-        "min_n": 3,
-        "max_n": 6,
-        "workers": 4,
-    },
-
-    # # Character n-gram variants
-    {
-        "name": "ft_300_sg_w5_mc2_e15_n2_5",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 15,
-        "sg": 1,
-        "min_n": 2,
-        "max_n": 5,
-        "workers": 4,
-    },
-    {
-        "name": "ft_300_sg_w5_mc2_e15_n4_7",
-        "vector_size": 300,
-        "window": 5,
-        "min_count": 2,
-        "epochs": 15,
-        "sg": 1,
-        "min_n": 4,
-        "max_n": 7,
         "workers": 4,
     },
 ]
